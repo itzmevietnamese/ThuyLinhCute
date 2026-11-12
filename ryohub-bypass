@@ -1,3 +1,9 @@
+-- ============================================================
+-- PASTE YOUR KEY HERE (GG-... for premium, or Luarmor key for free)
+-- ============================================================
+local KEY = "Anhyeuem"
+-- ============================================================
+
 -- Ryo Hub loader: one key for every supported game. Finds which game you're in and loads its script.
 local HttpService = game:GetService("HttpService")
 local KEY_URL = "https://ryohub.com/api"
@@ -13,9 +19,7 @@ local LUARMOR = {
 	["3183403065"] = "4bc3dc92851c70348a963d6154fde5ed", -- Anime Adventures
 	["4778845442"] = "7bc0ff71c90839b081be90ae739ed862", -- Toilet Tower Defense
 }
-local FREE_KEY_URL = "https://ryohub.com/key"
 
--- a usable answer: not empty and not a web error page
 local function usable(b) return type(b) == "string" and #b > 0 and not b:match("^%s*<") end
 local function httpGetOnce(url)
 	local req = (syn and syn.request) or http_request or request or (http and http.request) or (fluxus and fluxus.request)
@@ -27,7 +31,6 @@ local function httpGetOnce(url)
 	if ok and usable(body) then return body end
 	return nil
 end
--- tries 3 times (phones drop requests now and then, and the server can be busy when many clones join at once)
 local function httpGet(url)
 	for i = 1, 3 do
 		local b = httpGetOnce(url)
@@ -41,7 +44,7 @@ local function urlEncode(str)
 end
 local function clean(k)
 	k = (tostring(k or ""):gsub("%s", ""))
-	if k:upper():sub(1, 3) == "GG-" then k = k:upper() end -- Ryo keys are upper case; Luarmor keys are case sensitive
+	if k:upper():sub(1, 3) == "GG-" then k = k:upper() end
 	return k
 end
 local function isRyoKey(k) return k:sub(1, 3) == "GG-" end
@@ -56,13 +59,12 @@ local function lrm(scriptId)
 	return lrmApi
 end
 local LRM_MSG = {
-	KEY_EXPIRED = "Your free key expired. Press GET KEY for a new one.",
+	KEY_EXPIRED = "Your free key expired.",
 	KEY_HWID_LOCKED = "This free key is locked to another device. Reset your HWID on the get-key page.",
 	KEY_INCORRECT = "That key doesn't exist.",
 	KEY_INVALID = "That key doesn't look right. Copy the whole key again.",
 	KEY_BANNED = "This key was banned.",
 }
--- free (Luarmor) key check: ok, expires(ms, 0 = never) or message, code
 local function checkFreeKey(key)
 	local sid = LUARMOR[tostring(game.GameId)]
 	if not sid then return false, "Free keys don't work in this game yet.", "NOGAME" end
@@ -79,10 +81,9 @@ end
 local function who(key)
 	return "&key=" .. urlEncode(key) .. "&uid=" .. tostring(LP.UserId) .. "&game=" .. tostring(game.GameId) .. "&place=" .. tostring(game.PlaceId)
 end
--- returns ok, expires(ms, 0 = never) or message, error code
 local function checkKey(key)
 	key = clean(key)
-	if key == "" then return false, "Type your key first.", "EMPTY" end
+	if key == "" then return false, "No key set.", "EMPTY" end
 	if not isRyoKey(key) then return checkFreeKey(key) end
 	local body = httpGet(KEY_URL .. "?s=check" .. who(key))
 	if not body then return false, "Can't reach the key server. Check your internet and try again.", "NET" end
@@ -100,12 +101,17 @@ local function readFile(name)
 end
 
 local env = getgenv and getgenv() or _G
-local saved = env.RyoKey or env.RYO_KEY or env.GTD_KEY or (type(env.RyoKaitun) == "table" and env.RyoKaitun.Key)
-	or (type(env.RyoConfig) == "table" and env.RyoConfig.Key) or readFile(KEY_FILE) or readFile(OLD_KEY_FILE)
+local saved = clean(KEY)
+if saved == "" then
+	saved = env.RyoKey or env.RYO_KEY or env.GTD_KEY
+		or (type(env.RyoKaitun) == "table" and env.RyoKaitun.Key)
+		or (type(env.RyoConfig) == "table" and env.RyoConfig.Key)
+		or readFile(KEY_FILE) or readFile(OLD_KEY_FILE)
+end
 if saved then saved = clean(saved) end
 
 local function fetchScript(key)
-	if not isRyoKey(key) then -- free key: Luarmor sends its own (protected) copy of the script
+	if not isRyoKey(key) then
 		local api = lrm(LUARMOR[tostring(game.GameId)])
 		if not api then return nil, "Can't reach the free-key server. Try again." end
 		return function()
@@ -115,7 +121,7 @@ local function fetchScript(key)
 		end
 	end
 	local err = "Can't reach the key server. Check your internet and try again."
-	for i = 1, 2 do -- a cut-off download fails to compile; one more try usually fixes it
+	for i = 1, 2 do
 		local body = httpGet(KEY_URL .. "?s=src" .. who(key))
 		if not body then return nil, err, "NET" end
 		if body:sub(1, 1) == "{" then
@@ -135,14 +141,12 @@ end
 
 local function start(key, expires, fn)
 	pcall(function() if writefile then writefile(KEY_FILE, key) end end)
-	if isRyoKey(key) then pcall(function() if writefile then writefile(OLD_KEY_FILE, key) end end) end -- the GTD script still reads this one
+	if isRyoKey(key) then pcall(function() if writefile then writefile(OLD_KEY_FILE, key) end end) end
 	env.__RYO_KEY, env.__RYO_EXP = key, expires
-	if isRyoKey(key) then env.__GTD_KEY, env.__GTD_EXP = key, expires end -- GTD script skips its own key screen
+	if isRyoKey(key) then env.__GTD_KEY, env.__GTD_EXP = key, expires end
 	task.spawn(fn)
 end
 
--- a saved / preset key that still works opens the script straight away.
--- Network trouble is retried by itself (farms run with nobody watching), a refused key is not.
 local function trySaved()
 	local ok, info, code = checkKey(saved)
 	if not ok then return false, info, code end
@@ -151,17 +155,16 @@ local function trySaved()
 	return false, err, ecode
 end
 
--- No key UI. Only auto-load from saved/preset keys.
 if saved and saved ~= "" then
 	for i = 1, 4 do
 		local done, msg, code = trySaved()
 		if done then return end
 		if code ~= "NET" then
 			warn("[Ryo Hub] " .. tostring(msg))
-			break
+			return
 		end
 		if i < 4 then task.wait(i * 4) end
 	end
 else
-	warn("[Ryo Hub] No saved key. Set getgenv().RyoKey or write ryohubkey.txt before running.")
+	warn("[Ryo Hub] No key.")
 end
