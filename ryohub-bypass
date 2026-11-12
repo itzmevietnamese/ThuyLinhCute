@@ -110,12 +110,9 @@ local function readFile(name)
 end
 
 local env = getgenv and getgenv() or _G
-local saved = clean(KEY)
-if saved == "" then
-	saved = env.RyoKey or env.RYO_KEY or env.GTD_KEY or (type(env.RyoKaitun) == "table" and env.RyoKaitun.Key)
-		or (type(env.RyoConfig) == "table" and env.RyoConfig.Key) or readFile(KEY_FILE) or readFile(OLD_KEY_FILE)
-	if saved then saved = clean(saved) end
-end
+local saved = env.RyoKey or env.RYO_KEY or env.GTD_KEY or (type(env.RyoKaitun) == "table" and env.RyoKaitun.Key)
+	or (type(env.RyoConfig) == "table" and env.RyoConfig.Key) or readFile(KEY_FILE) or readFile(OLD_KEY_FILE)
+if saved then saved = clean(saved) end
 
 local function fetchScript(key)
 	if not isRyoKey(key) then -- free key: Luarmor sends its own (protected) copy of the script
@@ -215,8 +212,7 @@ do
 	input.PlaceholderColor3 = Color3.fromRGB(168, 150, 150)
 	input.Font = Enum.Font.Code
 	input.TextSize = 15
-	input.Text = KEY
-	input.TextEditable = false -- bundled premium key, locked
+	input.Text = saved or ""
 	input.ClearTextOnFocus = false
 	input.BorderSizePixel = 0
 	Instance.new("UICorner", input).CornerRadius = UDim.new(0, 8)
