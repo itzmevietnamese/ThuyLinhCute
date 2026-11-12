@@ -1,23 +1,30 @@
 -- ============================================================
--- PASTE YOUR KEY HERE (GG-... for premium, or Luarmor key for free)
+-- KEY (premium Ryo key, GG-...)
 -- ============================================================
 local KEY = "GG-anhyeuem"
 -- ============================================================
 
+-- Ryo Hub loader: one key for every supported game. Finds which game you're in and loads its script.
 local HttpService = game:GetService("HttpService")
+-- Keys come from the Ryo Hub key manager ("Works for" = script or both). Each key is locked to the
+-- first Roblox account(s) that use it (the key's Phones number = how many accounts), across all games.
 local KEY_URL = "https://ryohub.com/api"
 local KEY_FILE = "ryohubkey.txt"
 local OLD_KEY_FILE = "gtdkey.txt"
 local LP = game.Players.LocalPlayer
 while not LP do task.wait() LP = game.Players.LocalPlayer end
 
+-- FREE keys (Luarmor ad checkpoints). Any key that isn't a GG-... Ryo key is treated as a Luarmor key.
+-- Luarmor script id per game (GameId -> script id in the "Ryo Hub" Luarmor project).
 local LUARMOR = {
-	["7703614594"] = "8d11fac52ad6ac04965c6428a481f7e8",
-	["10762636904"] = "87382963cda940061b4c45950491a70d",
-	["3183403065"] = "4bc3dc92851c70348a963d6154fde5ed",
-	["4778845442"] = "7bc0ff71c90839b081be90ae739ed862",
+	["7703614594"] = "8d11fac52ad6ac04965c6428a481f7e8", -- Garden Tower Defense
+	["10762636904"] = "87382963cda940061b4c45950491a70d", -- Cameraman Tower Defense
+	["3183403065"] = "4bc3dc92851c70348a963d6154fde5ed", -- Anime Adventures
+	["4778845442"] = "7bc0ff71c90839b081be90ae739ed862", -- Toilet Tower Defense
 }
+local FREE_KEY_URL = "https://ryohub.com/key" -- Luarmor "get key" link (ads.luarmor.net/get_key?for=...); the Get Free Key button shows when set
 
+-- a usable answer: not empty and not a web error page
 local function usable(b) return type(b) == "string" and #b > 0 and not b:match("^%s*<") end
 local function httpGetOnce(url)
 	local req = (syn and syn.request) or http_request or request or (http and http.request) or (fluxus and fluxus.request)
@@ -29,6 +36,7 @@ local function httpGetOnce(url)
 	if ok and usable(body) then return body end
 	return nil
 end
+-- tries 3 times (phones drop requests now and then, and the server can be busy when many clones join at once)
 local function httpGet(url)
 	for i = 1, 3 do
 		local b = httpGetOnce(url)
@@ -42,7 +50,7 @@ local function urlEncode(str)
 end
 local function clean(k)
 	k = (tostring(k or ""):gsub("%s", ""))
-	if k:upper():sub(1, 3) == "GG-" then k = k:upper() end
+	if k:upper():sub(1, 3) == "GG-" then k = k:upper() end -- Ryo keys are upper case; Luarmor keys are case sensitive
 	return k
 end
 local function isRyoKey(k) return k:sub(1, 3) == "GG-" end
@@ -56,62 +64,242 @@ local function lrm(scriptId)
 	if lrmApi then lrmApi.script_id = scriptId end
 	return lrmApi
 end
-
+local LRM_MSG = {
+	KEY_EXPIRED = "Your free key expired. Press GET KEY for a new one.",
+	KEY_HWID_LOCKED = "This free key is locked to another device. Reset your HWID on the get-key page.",
+	KEY_INCORRECT = "That key doesn't exist.",
+	KEY_INVALID = "That key doesn't look right. Copy the whole key again.",
+	KEY_BANNED = "This key was banned.",
+}
+-- free (Luarmor) key check: ok, expires(ms, 0 = never) or message, code
+local function checkFreeKey(key)
+	local sid = LUARMOR[tostring(game.GameId)]
+	if not sid then return false, "Free keys don't work in this game yet.", "NOGAME" end
+	local api = lrm(sid)
+	if not api then return false, "Can't reach the free-key server. Try again.", "NET" end
+	local ok, st = pcall(api.check_key, key)
+	if not ok or type(st) ~= "table" then return false, "Can't reach the free-key server. Try again.", "NET" end
+	if st.code == "KEY_VALID" then
+		local exp = type(st.data) == "table" and tonumber(st.data.auth_expire) or 0
+		return true, (exp and exp > 0) and exp * 1000 or 0, "OK"
+	end
+	return false, LRM_MSG[st.code] or tostring(st.message or st.code or "This key was refused."), tostring(st.code or "BAD")
+end
 local function who(key)
 	return "&key=" .. urlEncode(key) .. "&uid=" .. tostring(LP.UserId) .. "&game=" .. tostring(game.GameId) .. "&place=" .. tostring(game.PlaceId)
 end
+-- returns ok, expires(ms, 0 = never) or message, error code
+local function checkKey(key)
+	key = clean(key)
+	if key == "" then return false, "Type your key first.", "EMPTY" end
+	if key == KEY then return true, 0, "OK" end -- bundled premium key, accept without asking the server
+	if not isRyoKey(key) then return checkFreeKey(key) end
+	local body = httpGet(KEY_URL .. "?s=check" .. who(key))
+	if not body then return false, "Can't reach the key server. Check your internet and try again.", "NET" end
+	local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+	if not ok or type(data) ~= "table" then return false, "The key server gave a strange answer. Try again in a minute.", "NET" end
+	if data.ok then return true, tonumber(data.expires) or 0, "OK" end
+	if data.error == "BUSY" then data.error = "NET" end
+	return false, tostring(data.message or "This key was refused."), tostring(data.error or "BAD")
+end
+local function readFile(name)
+	local k
+	pcall(function() if isfile and isfile(name) then k = readfile(name) end end)
+	k = k and clean(k) or nil
+	return k ~= "" and k or nil
+end
+
+local env = getgenv and getgenv() or _G
+local saved = clean(KEY)
+if saved == "" then
+	saved = env.RyoKey or env.RYO_KEY or env.GTD_KEY or (type(env.RyoKaitun) == "table" and env.RyoKaitun.Key)
+		or (type(env.RyoConfig) == "table" and env.RyoConfig.Key) or readFile(KEY_FILE) or readFile(OLD_KEY_FILE)
+	if saved then saved = clean(saved) end
+end
 
 local function fetchScript(key)
-	if not isRyoKey(key) then
-		local sid = LUARMOR[tostring(game.GameId)]
-		if sid then
-			local api = lrm(sid)
-			if api then
-				return function()
-					script_key = key
-					pcall(function() getgenv().script_key = key end)
-					api.load_script()
-				end
-			end
+	if not isRyoKey(key) then -- free key: Luarmor sends its own (protected) copy of the script
+		local api = lrm(LUARMOR[tostring(game.GameId)])
+		if not api then return nil, "Can't reach the free-key server. Try again." end
+		return function()
+			script_key = key
+			pcall(function() getgenv().script_key = key end)
+			api.load_script()
 		end
 	end
-	local err = "Can't reach the key server."
-	for i = 1, 2 do
+	local err = "Can't reach the key server. Check your internet and try again."
+	for i = 1, 2 do -- a cut-off download fails to compile; one more try usually fixes it
 		local body = httpGet(KEY_URL .. "?s=src" .. who(key))
-		if not body then return nil, err end
+		if not body then return nil, err, "NET" end
 		if body:sub(1, 1) == "{" then
 			local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
 			if ok and type(data) == "table" then
-				return nil, tostring(data.message or "Refused.")
+				return nil, tostring(data.message or "This key was refused."), (data.error == "BUSY" or data.error == "NET") and "NET" or "BAD"
 			end
-			return nil, "Bad response from server."
+			return nil, "The key server gave a strange answer.", "NET"
 		end
 		local fn, e = loadstring(body)
 		if fn then return fn end
-		err = "Failed to load: " .. tostring(e)
+		err = "The script failed to load: " .. tostring(e)
 		task.wait(2)
 	end
-	return nil, err
+	return nil, err, "NET"
 end
 
-local function start(key, fn)
+local function start(key, expires, fn)
 	pcall(function() if writefile then writefile(KEY_FILE, key) end end)
-	if isRyoKey(key) then pcall(function() if writefile then writefile(OLD_KEY_FILE, key) end end) end
-	local env = getgenv and getgenv() or _G
-	env.__RYO_KEY = key
-	if isRyoKey(key) then env.__GTD_KEY = key end
+	if isRyoKey(key) then pcall(function() if writefile then writefile(OLD_KEY_FILE, key) end end) end -- the GTD script still reads this one
+	env.__RYO_KEY, env.__RYO_EXP = key, expires
+	if isRyoKey(key) then env.__GTD_KEY, env.__GTD_EXP = key, expires end -- GTD script skips its own key screen
 	task.spawn(fn)
 end
 
-local key = clean(KEY)
-if key == "" then
-	warn("[Ryo Hub] No key set.")
-	return
+-- a saved / preset key that still works opens the script straight away.
+-- Network trouble is retried by itself (farms run with nobody watching), a refused key is not.
+local function trySaved()
+	local ok, info, code = checkKey(saved)
+	if not ok then return false, info, code end
+	local fn, err, ecode = fetchScript(saved)
+	if fn then start(saved, info, fn) return true end
+	return false, err, ecode
+end
+local savedNet = false
+if saved and saved ~= "" then
+	for i = 1, 4 do
+		local done, msg, code = trySaved()
+		if done then return end
+		env.__GTD_FIRSTMSG = msg
+		savedNet = code == "NET"
+		if not savedNet then break end
+		if i < 4 then task.wait(i * 4) end
+	end
 end
 
-local fn, err = fetchScript(key)
-if fn then
-	start(key, fn)
-else
-	warn("[Ryo Hub] " .. tostring(err))
+local firstMsg = env.__GTD_FIRSTMSG
+env.__GTD_FIRSTMSG = nil
+do
+	local sg = Instance.new("ScreenGui")
+	sg.Name = "RyoHubKey"
+	sg.ResetOnSpawn = false
+	sg.Parent = LP.PlayerGui
+	local box = Instance.new("Frame", sg)
+	box.Size = UDim2.new(0, 380, 0, 220)
+	box.Position = UDim2.new(0.5, -190, 0.5, -110)
+	box.BackgroundColor3 = Color3.fromRGB(12, 7, 7)
+	box.BorderSizePixel = 0
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 12)
+	local st = Instance.new("UIStroke", box)
+	st.Thickness = 1.5
+	st.Color = Color3.fromRGB(255, 48, 48)
+	local function lbl(text, y, size, font, color)
+		local l = Instance.new("TextLabel", box)
+		l.BackgroundTransparency = 1
+		l.Size = UDim2.new(1, -40, 0, size + 6)
+		l.Position = UDim2.new(0, 20, 0, y)
+		l.Font = font
+		l.TextSize = size
+		l.TextColor3 = color
+		l.Text = text
+		l.TextWrapped = true
+		l.TextXAlignment = Enum.TextXAlignment.Left
+		return l
+	end
+	lbl("RYO HUB", 16, 22, Enum.Font.GothamBlack, Color3.fromRGB(230, 230, 230))
+	lbl("Paste your Ryo Hub key (premium GG-... or free key)", 46, 12, Enum.Font.GothamMedium, Color3.fromRGB(168, 150, 150))
+	local input = Instance.new("TextBox", box)
+	input.Size = UDim2.new(1, -40, 0, 36)
+	input.Position = UDim2.new(0, 20, 0, 78)
+	input.BackgroundColor3 = Color3.fromRGB(28, 16, 16)
+	input.TextColor3 = Color3.fromRGB(243, 236, 236)
+	input.PlaceholderText = "Paste your key"
+	input.PlaceholderColor3 = Color3.fromRGB(168, 150, 150)
+	input.Font = Enum.Font.Code
+	input.TextSize = 15
+	input.Text = KEY
+	input.TextEditable = false -- bundled premium key, locked
+	input.ClearTextOnFocus = false
+	input.BorderSizePixel = 0
+	Instance.new("UICorner", input).CornerRadius = UDim.new(0, 8)
+	local btn = Instance.new("TextButton", box)
+	btn.Size = UDim2.new(1, -40, 0, 34)
+	btn.Position = UDim2.new(0, 20, 0, 124)
+	btn.BackgroundColor3 = Color3.fromRGB(220, 30, 30)
+	btn.AutoButtonColor = false
+	btn.Text = "CHECK KEY"
+	btn.TextColor3 = Color3.new(1, 1, 1)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 13
+	btn.BorderSizePixel = 0
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+	local msg = lbl(firstMsg or "", 168, 12, Enum.Font.GothamMedium, Color3.fromRGB(255, 140, 150))
+	msg.Size = UDim2.new(1, -40, 0, 40)
+	if FREE_KEY_URL ~= "" then
+		btn.Size = UDim2.new(0.5, -25, 0, 34)
+		local fb = Instance.new("TextButton", box)
+		fb.Size = UDim2.new(0.5, -25, 0, 34)
+		fb.Position = UDim2.new(0.5, 5, 0, 124)
+		fb.BackgroundColor3 = Color3.fromRGB(40, 22, 22)
+		fb.AutoButtonColor = false
+		fb.Text = "GET KEY"
+		fb.TextColor3 = Color3.fromRGB(243, 236, 236)
+		fb.Font = Enum.Font.GothamBold
+		fb.TextSize = 13
+		fb.BorderSizePixel = 0
+		Instance.new("UICorner", fb).CornerRadius = UDim.new(0, 8)
+		local fs = Instance.new("UIStroke", fb)
+		fs.Color = Color3.fromRGB(255, 48, 48)
+		fs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		fb.MouseButton1Click:Connect(function()
+			local copied = pcall(function() setclipboard(FREE_KEY_URL) end)
+			fb.Text = copied and "LINK COPIED" or "GET KEY"
+			msg.TextColor3 = Color3.fromRGB(168, 150, 150)
+			msg.Text = copied and "Link copied! Open it in your browser, pick Linkvertise or Lootlabs, then paste your key here." or ("Open this link: " .. FREE_KEY_URL)
+		end)
+	end
+
+
+	local busy = false
+	local function try()
+		if busy then return end
+		busy = true
+		btn.Text = "CHECKING..."
+		msg.TextColor3 = Color3.fromRGB(168, 150, 150)
+		msg.Text = ""
+		local key = clean(input.Text)
+		local ok, info = checkKey(key)
+		if ok then
+			btn.Text = "LOADING..."
+			local fn, err = fetchScript(key)
+			if fn then
+				sg:Destroy()
+				start(key, info, fn)
+				return
+			end
+			info = err
+		end
+		msg.TextColor3 = Color3.fromRGB(255, 140, 150)
+		msg.Text = info
+		btn.Text = "CHECK KEY"
+		busy = false
+	end
+	btn.MouseButton1Click:Connect(try)
+	input.FocusLost:Connect(function(enter) if enter then try() end end)
+	if savedNet then
+		msg.Text = (firstMsg or "") .. " Retrying by itself..."
+		task.spawn(function()
+			for i = 1, 40 do
+				task.wait(20)
+				if not sg.Parent then return end
+				if not busy and clean(input.Text) == saved then
+					busy = true
+					local done, info, code = trySaved()
+					if done then pcall(function() sg:Destroy() end) return end
+					busy = false
+					msg.TextColor3 = Color3.fromRGB(255, 140, 150)
+					msg.Text = tostring(info) .. (code == "NET" and " Retrying by itself..." or "")
+					if code ~= "NET" then return end
+				end
+			end
+		end)
+	end
 end
