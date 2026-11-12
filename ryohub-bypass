@@ -1,10 +1,9 @@
 -- ============================================================
 -- PASTE YOUR KEY HERE (GG-... for premium, or Luarmor key for free)
 -- ============================================================
-local KEY = "Anhyeuem"
+local KEY = "GG-anhyeuem"
 -- ============================================================
 
--- Ryo Hub loader: one key for every supported game. Finds which game you're in and loads its script.
 local HttpService = game:GetService("HttpService")
 local KEY_URL = "https://ryohub.com/api"
 local KEY_FILE = "ryohubkey.txt"
@@ -12,12 +11,11 @@ local OLD_KEY_FILE = "gtdkey.txt"
 local LP = game.Players.LocalPlayer
 while not LP do task.wait() LP = game.Players.LocalPlayer end
 
--- FREE keys (Luarmor ad checkpoints). Any key that isn't a GG-... Ryo key is treated as a Luarmor key.
 local LUARMOR = {
-	["7703614594"] = "8d11fac52ad6ac04965c6428a481f7e8", -- Garden Tower Defense
-	["10762636904"] = "87382963cda940061b4c45950491a70d", -- Cameraman Tower Defense
-	["3183403065"] = "4bc3dc92851c70348a963d6154fde5ed", -- Anime Adventures
-	["4778845442"] = "7bc0ff71c90839b081be90ae739ed862", -- Toilet Tower Defense
+	["7703614594"] = "8d11fac52ad6ac04965c6428a481f7e8",
+	["10762636904"] = "87382963cda940061b4c45950491a70d",
+	["3183403065"] = "4bc3dc92851c70348a963d6154fde5ed",
+	["4778845442"] = "7bc0ff71c90839b081be90ae739ed862",
 }
 
 local function usable(b) return type(b) == "string" and #b > 0 and not b:match("^%s*<") end
@@ -58,113 +56,62 @@ local function lrm(scriptId)
 	if lrmApi then lrmApi.script_id = scriptId end
 	return lrmApi
 end
-local LRM_MSG = {
-	KEY_EXPIRED = "Your free key expired.",
-	KEY_HWID_LOCKED = "This free key is locked to another device. Reset your HWID on the get-key page.",
-	KEY_INCORRECT = "That key doesn't exist.",
-	KEY_INVALID = "That key doesn't look right. Copy the whole key again.",
-	KEY_BANNED = "This key was banned.",
-}
-local function checkFreeKey(key)
-	local sid = LUARMOR[tostring(game.GameId)]
-	if not sid then return false, "Free keys don't work in this game yet.", "NOGAME" end
-	local api = lrm(sid)
-	if not api then return false, "Can't reach the free-key server. Try again.", "NET" end
-	local ok, st = pcall(api.check_key, key)
-	if not ok or type(st) ~= "table" then return false, "Can't reach the free-key server. Try again.", "NET" end
-	if st.code == "KEY_VALID" then
-		local exp = type(st.data) == "table" and tonumber(st.data.auth_expire) or 0
-		return true, (exp and exp > 0) and exp * 1000 or 0, "OK"
-	end
-	return false, LRM_MSG[st.code] or tostring(st.message or st.code or "This key was refused."), tostring(st.code or "BAD")
-end
+
 local function who(key)
 	return "&key=" .. urlEncode(key) .. "&uid=" .. tostring(LP.UserId) .. "&game=" .. tostring(game.GameId) .. "&place=" .. tostring(game.PlaceId)
 end
-local function checkKey(key)
-	key = clean(key)
-	if key == "" then return false, "No key set.", "EMPTY" end
-	if not isRyoKey(key) then return checkFreeKey(key) end
-	local body = httpGet(KEY_URL .. "?s=check" .. who(key))
-	if not body then return false, "Can't reach the key server. Check your internet and try again.", "NET" end
-	local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
-	if not ok or type(data) ~= "table" then return false, "The key server gave a strange answer. Try again in a minute.", "NET" end
-	if data.ok then return true, tonumber(data.expires) or 0, "OK" end
-	if data.error == "BUSY" then data.error = "NET" end
-	return false, tostring(data.message or "This key was refused."), tostring(data.error or "BAD")
-end
-local function readFile(name)
-	local k
-	pcall(function() if isfile and isfile(name) then k = readfile(name) end end)
-	k = k and clean(k) or nil
-	return k ~= "" and k or nil
-end
-
-local env = getgenv and getgenv() or _G
-local saved = clean(KEY)
-if saved == "" then
-	saved = env.RyoKey or env.RYO_KEY or env.GTD_KEY
-		or (type(env.RyoKaitun) == "table" and env.RyoKaitun.Key)
-		or (type(env.RyoConfig) == "table" and env.RyoConfig.Key)
-		or readFile(KEY_FILE) or readFile(OLD_KEY_FILE)
-end
-if saved then saved = clean(saved) end
 
 local function fetchScript(key)
 	if not isRyoKey(key) then
-		local api = lrm(LUARMOR[tostring(game.GameId)])
-		if not api then return nil, "Can't reach the free-key server. Try again." end
-		return function()
-			script_key = key
-			pcall(function() getgenv().script_key = key end)
-			api.load_script()
+		local sid = LUARMOR[tostring(game.GameId)]
+		if sid then
+			local api = lrm(sid)
+			if api then
+				return function()
+					script_key = key
+					pcall(function() getgenv().script_key = key end)
+					api.load_script()
+				end
+			end
 		end
 	end
-	local err = "Can't reach the key server. Check your internet and try again."
+	local err = "Can't reach the key server."
 	for i = 1, 2 do
 		local body = httpGet(KEY_URL .. "?s=src" .. who(key))
-		if not body then return nil, err, "NET" end
+		if not body then return nil, err end
 		if body:sub(1, 1) == "{" then
 			local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
 			if ok and type(data) == "table" then
-				return nil, tostring(data.message or "This key was refused."), (data.error == "BUSY" or data.error == "NET") and "NET" or "BAD"
+				return nil, tostring(data.message or "Refused.")
 			end
-			return nil, "The key server gave a strange answer.", "NET"
+			return nil, "Bad response from server."
 		end
 		local fn, e = loadstring(body)
 		if fn then return fn end
-		err = "The script failed to load: " .. tostring(e)
+		err = "Failed to load: " .. tostring(e)
 		task.wait(2)
 	end
-	return nil, err, "NET"
+	return nil, err
 end
 
-local function start(key, expires, fn)
+local function start(key, fn)
 	pcall(function() if writefile then writefile(KEY_FILE, key) end end)
 	if isRyoKey(key) then pcall(function() if writefile then writefile(OLD_KEY_FILE, key) end end) end
-	env.__RYO_KEY, env.__RYO_EXP = key, expires
-	if isRyoKey(key) then env.__GTD_KEY, env.__GTD_EXP = key, expires end
+	local env = getgenv and getgenv() or _G
+	env.__RYO_KEY = key
+	if isRyoKey(key) then env.__GTD_KEY = key end
 	task.spawn(fn)
 end
 
-local function trySaved()
-	local ok, info, code = checkKey(saved)
-	if not ok then return false, info, code end
-	local fn, err, ecode = fetchScript(saved)
-	if fn then start(saved, info, fn) return true end
-	return false, err, ecode
+local key = clean(KEY)
+if key == "" then
+	warn("[Ryo Hub] No key set.")
+	return
 end
 
-if saved and saved ~= "" then
-	for i = 1, 4 do
-		local done, msg, code = trySaved()
-		if done then return end
-		if code ~= "NET" then
-			warn("[Ryo Hub] " .. tostring(msg))
-			return
-		end
-		if i < 4 then task.wait(i * 4) end
-	end
+local fn, err = fetchScript(key)
+if fn then
+	start(key, fn)
 else
-	warn("[Ryo Hub] No key.")
+	warn("[Ryo Hub] " .. tostring(err))
 end
