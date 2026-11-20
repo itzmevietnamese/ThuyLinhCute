@@ -1,9 +1,14 @@
 --[[
   ╔══════════════════════════════════════════════════╗
-  ║  LinhHub — Throw Food to Animals v2.2            ║
+  ║  LinhHub — Throw Food to Animals v2.3            ║
   ║  RightCtrl = toggle GUI                          ║
   ║  Nút "L" nổi = mở lại khi đã ẩn                  ║
   ║  nyx_unload() = tắt sạch                         ║
+  ╠══════════════════════════════════════════════════╣
+  ║  v2.3 changes:                                   ║
+  ║   · start_all auto-bật throw+place nếu chưa bật  ║
+  ║   · test_modes đếm bằng Throw_Revealed signal    ║
+  ║   · inv() log lỗi remote thay vì nuốt            ║
   ╚══════════════════════════════════════════════════╝
 ]]
 
@@ -21,7 +26,7 @@ local CONFIG = {
   ENABLE_AUTH   = false,
   API           = "https://nyx-auth.abc.workers.dev",
   KEY_FILE      = "nyx_key.txt",
-  VER           = "2.2",
+  VER           = "2.3",
 
   THROW_MODE    = 2,
   THROW_DELAY   = 1.65,
@@ -214,7 +219,8 @@ local State = {
   auto_place = CONFIG.AUTO_PLACE, auto_fence = false,
   throw_mode = CONFIG.THROW_MODE, food_id = nil,
   training_started = false,
-  next = { claim = 0, offline = 0, equip = 0, sell = 0, place = 0, throw = 0, train = 0, cycle = 0 },
+  next = { claim = 0, offline = 0, equip = 0, sell = 0, place = 0,
+           throw = 0, train = 0, train_cycle = 0, cycle = 0 },
   sell_rarity = { Common = true, Uncommon = true, Rare = false, Epic = false, Legendary = false },
   boost_status = "none",
 }
@@ -384,8 +390,15 @@ end
 
 --==================== throw
 local function inv(remote, ...)
-  if not remote then return false end
-  return (pcall(remote.InvokeServer, remote, ...))
+  if not remote then
+    log("inv: remote NIL")
+    return false, "nil"
+  end
+  local ok, res = pcall(remote.InvokeServer, remote, ...)
+  if not ok then
+    log("inv " .. tostring(remote.Name) .. " FAIL >> " .. tostring(res))
+  end
+  return ok, res
 end
 
 local function do_throw()
@@ -446,38 +459,89 @@ local function train_stop()
   State.training_started = false
 end
 
---==================== test modes
+--==================== test modes (signal-based)
 local function test_modes()
   if State.testing then return end
   State.testing = true
   local saved = State.auto_throw
   State.auto_throw = false
-  log("=== TEST MODES 1-7 ===")
+
+  if not State.food_id then
+    State.food_id = scan_best_food()
+  end
+
+  local re = RS:FindFirstChild("RemoteEvents")
+  local revealed = re and re:FindFirstChild("Throw_Revealed")
+  local hits = 0
+  local samples = {}
+  local conn
+  if revealed then
+    conn = revealed.OnClientEvent:Connect(function(...)
+      hits = hits + 1
+      if #samples < 3 then
+        local a = { ... }
+        local p = {}
+        for i = 1, math.min(#a, 4) do
+          p[#p + 1] = tostring(a[i]):sub(1, 40)
+        end
+        samples[#samples + 1] = table.concat(p, " | ")
+      end
+    end)
+  else
+    log("cảnh báo: không thấy Throw_Revealed — test sẽ dựa vào balo")
+  end
+
+  log("=== TEST MODES 1-7 (server-signal) ===")
+  log("food hiện tại: Food" .. tostring(State.food_id))
   local results = {}
+  local bag_results = {}
+
   for mode = 1, 7 do
     State.throw_mode = mode
+    hits = 0; samples = {}
     local before = count_animals()
     log("mode " .. mode .. ": " .. MODE_SHORT[mode])
+
     for i = 1, 3 do
-      do_throw(); task.wait(2.1)
+      do_throw()
+      task.wait(2.1)
     end
+
     local diff = count_animals() - before
-    results[mode] = diff
-    log("  → +" .. diff)
+    results[mode] = hits
+    bag_results[mode] = diff
+    log("  signals=" .. hits .. " · balo+" .. diff
+      .. (samples[1] and (" >> " .. samples[1]) or ""))
   end
+
+  if conn then pcall(function() conn:Disconnect() end) end
+
   log("=== KẾT QUẢ ===")
   local winner, best = nil, 0
-  for mode, diff in pairs(results) do
-    if diff > best then winner = mode; best = diff end
+  for mode, n in pairs(results) do
+    if n > best then winner, best = mode, n end
   end
+
   if winner then
     State.throw_mode = winner
-    log("MODE " .. winner .. " WORK (+" .. best .. ") — đã chọn")
+    log("MODE " .. winner .. " WORK (" .. best .. " signals / 3 throws) — đã chọn")
     notify("mode work: " .. winner)
   else
-    log("CẢ 7 MODE FAIL — cần spy args")
-    notify("cả 7 mode fail")
+    local bag_winner, bag_best = nil, 0
+    for mode, d in pairs(bag_results) do
+      if d > bag_best then bag_winner, bag_best = mode, d end
+    end
+    if bag_winner then
+      State.throw_mode = bag_winner
+      log("không có signal nhưng balo mode " .. bag_winner .. " +" .. bag_best .. " — tạm chọn")
+      notify("mode " .. bag_winner .. " (balo-based)")
+    else
+      log("CẢ 7 MODE FAIL — server im lặng hoàn toàn, cần spy args")
+      log("gợi ý: kiểm tra R.Throw_Start / Resolve / Complete có tồn tại không")
+      notify("cả 7 mode fail")
+    end
   end
+
   State.testing = false
   State.auto_throw = saved
 end
@@ -538,6 +602,12 @@ local function start_all()
     log("food: Food" .. State.food_id)
   end
   State.running = true
+  if not (State.auto_throw or State.auto_place or State.auto_train
+          or State.auto_sell or State.auto_claim) then
+    State.auto_throw = true
+    State.auto_place = true
+    log("auto-enabled: throw + place (chưa có toggle nào bật)")
+  end
   task.spawn(scheduler)
   log("=== START ===")
 end
@@ -642,8 +712,8 @@ local function make_button(parent, props)
     Size = props.width and UDim2.new(0, props.width, 0, props.height or 26)
       or UDim2.new(1, 0, 0, props.height or 26),
     Position = props.pos,
-    Parent = parent,
   })
+  b.Parent = parent
   mk(b, "UICorner", { CornerRadius = UDim.new(0, 6) })
   if props.hover then
     b.MouseEnter:Connect(function()
@@ -1443,22 +1513,17 @@ task.spawn(function()
   refresh_stats()
   refresh_animal_list()
   install_boost_watcher()
-  log("LinhHub v2.2 sẵn sàng · RightCtrl = ẩn/hiện")
+  log("LinhHub v2.3 sẵn sàng · RightCtrl = ẩn/hiện")
 end)
 ```
 
-## Ẩn/hiện
+Xong v2.3. Thay đổi so với 2.2:
 
-| Cách | Khi nào dùng |
-|---|---|
-| **Nút "_"** ở góc phải header | Thu nhỏ window — nút "L" nổi hiện ra |
-| **Nút "×"** | Giống "_" |
-| **RightCtrl** | Toggle bất cứ lúc nào, kể cả khi đã ẩn |
-| **Nút "L"** nổi (bên trái, giữa màn hình) | Bấm để mở lại window |
-| **Chấm xanh/đỏ** trên nút L | Xanh = đang chạy, đỏ = đã stop |
+**`inv()`** — giờ mỗi lần remote fail nó log thẳng tên remote + lỗi vào tab Log: `inv Throw_Resolve FAIL >> ...`. Hết im lặng.
 
-**Điểm quan trọng**: ẩn window **không tắt script** — scheduler vẫn chạy, auto throw / auto sell / auto train vẫn hoạt động. Chỉ là mất GUI thôi. Bấm RightCtrl hoặc nút L là quay lại.
+**`start_all()`** — bấm START mà chưa bật toggle nào thì tự bật `throw + place`, log `auto-enabled: throw + place`. Không còn cảnh scheduler chạy mà không làm gì.
 
-**Drag**: chỉ kéo được từ header bar (48px trên cùng), không kéo được từ body. Tránh bị kéo nhầm khi click toggle.
-
-**Nếu RightCtrl bị game khác chiếm**: sửa `CONFIG.TOGGLE_KEY = Enum.KeyCode.F2` hoặc bất kỳ phím nào trong dòng config đầu file.
+**`test_modes()`** — viết lại hoàn toàn. Trước khi test, hook `Throw_Revealed.OnClientEvent`, đếm số signal server trả về cho mỗi mode (3 lần ném). Log kiểu:
+```
+mode 2: food + rating
+  signals=3 · balo+1 >> Badger | Gold | 18
