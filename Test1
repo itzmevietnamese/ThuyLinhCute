@@ -1,1529 +1,356 @@
---[[
-  ╔══════════════════════════════════════════════════╗
-  ║  LinhHub — Throw Food to Animals v2.3            ║
-  ║  RightCtrl = toggle GUI                          ║
-  ║  Nút "L" nổi = mở lại khi đã ẩn                  ║
-  ║  nyx_unload() = tắt sạch                         ║
-  ╠══════════════════════════════════════════════════╣
-  ║  v2.3 changes:                                   ║
-  ║   · start_all auto-bật throw+place nếu chưa bật  ║
-  ║   · test_modes đếm bằng Throw_Revealed signal    ║
-  ║   · inv() log lỗi remote thay vì nuốt            ║
-  ╚══════════════════════════════════════════════════╝
-]]
+-- LinhHub HUD v1.0 — overlay only
+-- RightCtrl / F2 ẩn/hiện — kéo header để di chuyển
 
---==================== services
-local Players      = game:GetService("Players")
-local RS           = game:GetService("ReplicatedStorage")
-local UIS          = game:GetService("UserInputService")
-local HS           = game:GetService("HttpService")
-local StarterGui   = game:GetService("StarterGui")
-local TweenService = game:GetService("TweenService")
+local CONFIG = {
+	VER = "1.0",
+	TOGGLE_KEY = Enum.KeyCode.RightControl,
+	TOGGLE_KEY2 = Enum.KeyCode.F2,
+	UPDATE_INTERVAL = 0.5,
+}
+
+if getgenv().linhhub_hud then
+	pcall(function() getgenv().linhhub_hud:Destroy() end)
+end
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
 local LP = Players.LocalPlayer
 
---==================== config
-local CONFIG = {
-  ENABLE_AUTH   = false,
-  API           = "https://nyx-auth.abc.workers.dev",
-  KEY_FILE      = "nyx_key.txt",
-  VER           = "2.3",
-
-  THROW_MODE    = 2,
-  THROW_DELAY   = 1.65,
-  THROW_JITTER  = 0.10,
-  THROW_SKIP    = 0.03,
-  FOOD_ID       = "auto",
-  THROW_POWER   = "max",
-
-  KEEP_MUTATION = true,
-  KEEP_SIZE     = true,
-
-  CLAIM_DELAY   = 120,
-  OFFLINE_DELAY = 300,
-  EQUIP_DELAY   = 8,
-  SELL_DELAY    = 10,
-  PLACE_DELAY   = 4,
-  TRAIN_TAP     = 0.7,
-  TRAIN_CYCLE   = 55,
-
-  AUTO_PLACE    = true,
-  TOGGLE_KEY    = Enum.KeyCode.RightControl,
+local COL = {
+	bg = Color3.fromRGB(18, 18, 22),
+	panel = Color3.fromRGB(26, 26, 32),
+	panel2 = Color3.fromRGB(34, 34, 42),
+	accent = Color3.fromRGB(120, 70, 255),
+	accent2 = Color3.fromRGB(255, 70, 140),
+	text = Color3.fromRGB(230, 230, 235),
+	dim = Color3.fromRGB(150, 150, 160),
+	good = Color3.fromRGB(70, 200, 120),
+	bad = Color3.fromRGB(220, 70, 70),
+	gold = Color3.fromRGB(255, 200, 60),
 }
 
-local _SIG = "VWtWd1dGRldUa2xTVmtwRw=="
-
---==================== guard
-if getgenv().nyx_loaded then
-  pcall(function()
-    if type(getgenv().nyx_unload) == "function" then getgenv().nyx_unload("reload") end
-  end)
-end
-getgenv().nyx_loaded = true
-
---==================== log
-local LogLines = {}
-local log_hook
-
-local function log(m)
-  local s = string.format("[%s] %s", os.date("%H:%M:%S"), tostring(m))
-  table.insert(LogLines, s)
-  while #LogLines > 300 do table.remove(LogLines, 1) end
-  warn("[LinhHub] " .. tostring(m))
-  if log_hook then pcall(log_hook) end
+local function mk(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props or {}) do o[k] = v end
+	if parent then o.Parent = parent end
+	return o
 end
 
-local function notify(t)
-  pcall(function()
-    StarterGui:SetCore("SendNotification", { Title = "LinhHub", Text = tostring(t), Duration = 5 })
-  end)
+local function corner(p, r) mk("UICorner", {CornerRadius = UDim.new(0, r or 6)}, p) end
+local function stroke(p, c) mk("UIStroke", {Color = c or COL.panel2, Thickness = 1}, p) end
+
+local guiParent
+pcall(function()
+	local cg = game:GetService("CoreGui")
+	local probe = Instance.new("Folder")
+	probe.Parent = cg
+	probe:Destroy()
+	guiParent = cg
+end)
+if not guiParent then guiParent = LP:WaitForChild("PlayerGui") end
+
+local gui = mk("ScreenGui", {
+	Name = "LinhHubHUD",
+	ResetOnSpawn = false,
+	DisplayOrder = 50,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, guiParent)
+getgenv().linhhub_hud = gui
+
+local hud = mk("Frame", {
+	Size = UDim2.new(0, 280, 0, 108),
+	Position = UDim2.new(1, -300, 0, 20),
+	BackgroundColor3 = COL.bg,
+	BorderSizePixel = 0,
+	Active = true,
+}, gui)
+corner(hud, 8)
+stroke(hud, COL.accent)
+
+local header = mk("Frame", {
+	Size = UDim2.new(1, 0, 0, 24),
+	BackgroundColor3 = COL.panel,
+	BorderSizePixel = 0,
+}, hud)
+corner(header, 8)
+
+mk("TextLabel", {
+	Size = UDim2.new(1, -70, 1, 0),
+	Position = UDim2.new(0, 10, 0, 0),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 12,
+	TextColor3 = COL.accent,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "LinhHub HUD v" .. CONFIG.VER,
+}, header)
+
+local minBtn = mk("TextButton", {
+	Size = UDim2.new(0, 20, 0, 20),
+	Position = UDim2.new(1, -46, 0.5, -10),
+	BackgroundColor3 = COL.panel2,
+	BorderSizePixel = 0,
+	Font = Enum.Font.GothamBold,
+	TextSize = 12,
+	TextColor3 = COL.text,
+	Text = "-",
+}, header)
+corner(minBtn, 3)
+
+local closeBtn = mk("TextButton", {
+	Size = UDim2.new(0, 20, 0, 20),
+	Position = UDim2.new(1, -24, 0.5, -10),
+	BackgroundColor3 = COL.bad,
+	BorderSizePixel = 0,
+	Font = Enum.Font.GothamBold,
+	TextSize = 12,
+	TextColor3 = COL.text,
+	Text = "x",
+}, header)
+corner(closeBtn, 3)
+
+local row1 = mk("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 22),
+	Position = UDim2.new(0, 10, 0, 28),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextColor3 = COL.gold,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "loading...",
+}, hud)
+
+local row2 = mk("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 18),
+	Position = UDim2.new(0, 10, 0, 50),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.Gotham,
+	TextSize = 11,
+	TextColor3 = COL.text,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "...",
+}, hud)
+
+local row3 = mk("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 16),
+	Position = UDim2.new(0, 10, 0, 68),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.Gotham,
+	TextSize = 10,
+	TextColor3 = COL.dim,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "...",
+}, hud)
+
+local row4 = mk("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 16),
+	Position = UDim2.new(0, 10, 0, 84),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.Gotham,
+	TextSize = 10,
+	TextColor3 = COL.accent2,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "",
+}, hud)
+
+local floatBtn = mk("TextButton", {
+	Size = UDim2.new(0, 40, 0, 40),
+	Position = UDim2.new(1, -52, 0, 20),
+	BackgroundColor3 = COL.accent,
+	BorderSizePixel = 0,
+	Font = Enum.Font.GothamBold,
+	TextSize = 18,
+	TextColor3 = COL.text,
+	Text = "L",
+	Visible = false,
+}, gui)
+corner(floatBtn, 20)
+stroke(floatBtn, COL.panel2)
+
+local SUFFIX = {"", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
+local function fmt(n)
+	n = tonumber(n) or 0
+	if math.abs(n) < 1000 then return tostring(math.floor(n)) end
+	local i = math.floor(math.log10(math.abs(n)) / 3)
+	if i > #SUFFIX - 1 then i = #SUFFIX - 1 end
+	return string.format("%.2f%s", n / (1000 ^ i), SUFFIX[i + 1])
 end
 
---==================== auth (optional)
-local SESSION = { key = "local", ok = false }
-if CONFIG.ENABLE_AUTH then
-  local HTTP_FN = (syn and syn.request) or (http and http.request) or http_request or request
-  if not HTTP_FN then
-    log("auth: executor không hỗ trợ http"); getgenv().nyx_loaded = false; return
-  end
-
-  local function get_hwid()
-    local ok, v = pcall(function() return gethwid() end)
-    if ok and type(v) == "string" and #v > 2 then return v end
-    ok, v = pcall(function() return game:GetService("RbxAnalyticsService"):GetClientId() end)
-    if ok and type(v) == "string" then return v end
-    return "uid" .. tostring(LP.UserId)
-  end
-
-  local function read_key()
-    if not (readfile and isfile) then return nil end
-    local ok, has = pcall(isfile, CONFIG.KEY_FILE)
-    if not ok or not has then return nil end
-    local ok2, c = pcall(readfile, CONFIG.KEY_FILE)
-    if not ok2 or type(c) ~= "string" then return nil end
-    local k = c:gsub("%s+", ""); if #k >= 6 then return k end
-  end
-
-  local function api_post(path, body)
-    local payload = (function() local ok, v = pcall(function() return HS:JSONEncode(body) end); return ok and v or nil end)()
-    if not payload then return nil, "encode" end
-    local ok2, res = pcall(HTTP_FN, { Url = CONFIG.API .. path, Method = "POST",
-      Headers = { ["content-type"] = "application/json" }, Body = payload })
-    if not ok2 or type(res) ~= "table" or not res.Body then return nil, "network" end
-    local ok3, data = pcall(function() return HS:JSONDecode(res.Body) end)
-    if not ok3 or type(data) ~= "table" then return nil, "decode" end
-    return data
-  end
-
-  local key = read_key()
-  if not key then
-    log("auth: chưa có key, nhập vào nyx_key.txt rồi chạy lại")
-    getgenv().nyx_loaded = false; return
-  end
-  local data, err = api_post("/v1/auth", { key = key, hwid = get_hwid() })
-  if not (data and (data.ok or data.err == "no_payload")) then
-    log("auth fail: " .. tostring(data and data.err or err))
-    getgenv().nyx_loaded = false; return
-  end
-  SESSION = { key = key, ok = true, hwid = get_hwid() }
-  log("auth ok: " .. key:sub(1,4) .. "…" .. key:sub(-4))
-else
-  log("auth: disabled (dev)")
+local function get_stat(names)
+	local ls = LP:FindFirstChild("leaderstats")
+	if ls then
+		for _, v in ipairs(ls:GetChildren()) do
+			if v:IsA("ValueBase") then
+				local vl = v.Name:lower()
+				for _, n in ipairs(names) do
+					if vl:find(n) then return tonumber(v.Value) or 0 end
+				end
+			end
+		end
+	end
+	for _, n in ipairs(names) do
+		local cap = n:sub(1, 1):upper() .. n:sub(2)
+		local a = LP:GetAttribute(cap)
+		if a then return tonumber(a) or 0 end
+	end
+	return 0
 end
 
---==================== remotes
-local R = {}
-local REMOTE_NAMES = {
-  "Throw_Start","Throw_Resolve","Throw_Complete","Throw_Cancel","Throw_UseSuper",
-  "Player_SetThrowPower","Shop_ClaimFree","Shop_Equip","Shop_Buy",
-  "Offline_Claim","Sell_Protected","Plot_EquipBest","Plot_SellAnimal","Plot_SellAll",
-  "Plot_PlaceAnimal","Plot_PickUpAnimal","Plot_EquipAnimal","Plot_HoldAnimal",
-  "Plot_ReleaseTool","Plot_UpgradeFence","Training_Start","Training_Stop",
-  "Training_TapBonus","IndexRewards_Equip","IndexRewards_Claim","Dreamland_Action","Dev_Action",
-}
-do
-  local rem = RS:FindFirstChild("Remotes")
-  if rem then
-    for _, n in ipairs(REMOTE_NAMES) do
-      local inst = rem:FindFirstChild(n)
-      if inst then R[n] = inst end
-    end
-  else
-    log("không thấy ReplicatedStorage.Remotes")
-  end
+local function is_food(t)
+	if not t or not t:IsA("Tool") then return false end
+	return t.Name:match("^Food%d*") ~= nil
 end
 
---==================== game constants
-local MUTATIONS = { Gold = true, Diamond = true, Emerald = true, Ruby = true, Rainbow = true }
-local MUT_MULT = { Gold = 1.5, Diamond = 3, Emerald = 5, Ruby = 10, Rainbow = 20 }
-local MUT_COLOR = {
-  Gold = Color3.fromRGB(255, 215, 80),
-  Diamond = Color3.fromRGB(140, 220, 255),
-  Emerald = Color3.fromRGB(100, 255, 150),
-  Ruby = Color3.fromRGB(255, 100, 120),
-  Rainbow = Color3.fromRGB(255, 130, 240),
-}
-
-local SIZES = { Big = true, Large = true, Huge = true, Colossal = true, Gigantic = true,
-  Titanic = true, Monstrous = true, Cosmic = true, Infinite = true }
-local SIZE_MULT = { Big = 1.5, Large = 2.25, Huge = 3.38, Colossal = 5.06, Gigantic = 7.59,
-  Titanic = 11.39, Monstrous = 17.09, Cosmic = 25.63, Infinite = 38 }
-
-local RARITY_SCORE = { Common = 1, Uncommon = 2, Rare = 4, Epic = 8, Legendary = 16, Mythic = 32,
-  Secret = 64, Divine = 128, Celestial = 256, Supreme = 512, Sovereign = 512 }
-
-local RARITY_COLOR = {
-  Common = Color3.fromRGB(160, 170, 185),
-  Uncommon = Color3.fromRGB(120, 220, 140),
-  Rare = Color3.fromRGB(100, 170, 255),
-  Epic = Color3.fromRGB(190, 120, 255),
-  Legendary = Color3.fromRGB(255, 190, 80),
-  Mythic = Color3.fromRGB(255, 100, 120),
-  Secret = Color3.fromRGB(255, 80, 200),
-  Divine = Color3.fromRGB(255, 240, 150),
-  Celestial = Color3.fromRGB(160, 240, 255),
-  Supreme = Color3.fromRGB(255, 100, 255),
-}
-
-local FOOD_NAMES = {
-  [1]="Carrot",[2]="Apple",[3]="Banana",[4]="Toast",[5]="Orange",[6]="Pear",[7]="Cheese",
-  [8]="Bread Loaf",[9]="Water Melon",[10]="Croissant",[11]="Chocolate",[12]="Mushroom",
-  [13]="Bacon",[14]="Burger",[15]="Shank",[16]="Fillet",[17]="Steak",[18]="Royal Steak",
-  [19]="Golden Apple",[20]="Crystal Melon",[21]="Ember Bacon",[22]="Lava Steak",
-  [23]="Elder Strawberry",[24]="Phoenix Fillet",[25]="Star Jelly",[26]="Dragon's Apple",
-}
-
-local MODE_DESC = {
-  [1] = "start() · resolve() · complete() — không args",
-  [2] = "start(food) · resolve(food, 1.0) · complete(food)",
-  [3] = "start(food) · resolve(food, 20) · complete(food) [scale 0-20]",
-  [4] = "start(food) · resolve(food) · complete(food) [natural meter]",
-  [5] = "start(food) · resolve(1.0) · complete() [no food in commit]",
-  [6] = "start(food) · wait 1.2s · resolve(20) · complete(food)",
-  [7] = "start(food) only [test partial]",
-}
-local MODE_SHORT = {
-  [1] = "baseline no-arg",
-  [2] = "food + rating",
-  [3] = "food + 0-20",
-  [4] = "natural meter",
-  [5] = "rating only",
-  [6] = "timing 1.2s",
-  [7] = "start only",
-}
-
---==================== state
-local State = {
-  running = false, testing = false,
-  auto_train = false, auto_throw = false, auto_claim = false,
-  auto_offline = false, auto_equip = false, auto_sell = false,
-  auto_place = CONFIG.AUTO_PLACE, auto_fence = false,
-  throw_mode = CONFIG.THROW_MODE, food_id = nil,
-  training_started = false,
-  next = { claim = 0, offline = 0, equip = 0, sell = 0, place = 0,
-           throw = 0, train = 0, train_cycle = 0, cycle = 0 },
-  sell_rarity = { Common = true, Uncommon = true, Rare = false, Epic = false, Legendary = false },
-  boost_status = "none",
-}
-
---==================== helpers
-local function get_money()
-  local ls = LP:FindFirstChild("leaderstats")
-  if ls then
-    local m = ls:FindFirstChild("Money") or ls:FindFirstChild("Cash") or ls:FindFirstChild("Coins")
-    if m then return m.Value end
-  end
+local function scan_tools()
+	local foods, animals = {}, {}
+	local containers = {LP:FindFirstChild("Backpack"), LP.Character}
+	for _, c in ipairs(containers) do
+		if c then
+			for _, t in ipairs(c:GetChildren()) do
+				if t:IsA("Tool") then
+					if is_food(t) then table.insert(foods, t)
+					else table.insert(animals, t) end
+				end
+			end
+		end
+	end
+	return foods, animals
 end
 
-local function get_level()
-  local ls = LP:FindFirstChild("leaderstats")
-  if ls then
-    local l = ls:FindFirstChild("Level") or ls:FindFirstChild("Lvl")
-    if l then return l.Value end
-  end
-  local a = LP:GetAttribute("Level")
-  if a then return a end
+local function best_food()
+	local foods = scan_tools()
+	local best, bn = nil, -1
+	for _, t in ipairs(foods) do
+		local n = tonumber(t.Name:match("%d+")) or 0
+		if n > bn then best, bn = t, n end
+	end
+	return best
 end
 
-local function fmt_money(n)
-  if not n then return "?" end
-  n = tonumber(n) or 0
-  local s = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
-  local i = 1
-  while n >= 1000 and i < #s do n = n / 1000; i = i + 1 end
-  if i == 1 then return string.format("%.0f", n) end
-  return string.format("%.2f%s", n, s[i])
+local function get_income()
+	for _, key in ipairs({"MoneyPerSecond", "IncomePerSecond", "Income", "PerSecond", "MoneyRate", "IncomeRate"}) do
+		local v = LP:GetAttribute(key)
+		if v then return tonumber(v) end
+	end
+	return nil
 end
 
-local function scan_best_food()
-  if CONFIG.FOOD_ID ~= "auto" then return tonumber(CONFIG.FOOD_ID) or 1 end
-  local bp = LP:FindFirstChild("Backpack")
-  local best = 1
-  if bp then
-    for _, t in ipairs(bp:GetChildren()) do
-      if t:IsA("Tool") then
-        local fid
-        pcall(function() fid = t:GetAttribute("FoodId") or t:GetAttribute("Id") end)
-        if fid and fid >= 1 and fid <= 50 and fid > best then best = fid end
-      end
-    end
-  end
-  return best
+local function get_boosts()
+	local out = {}
+	local ok, attrs = pcall(function() return LP:GetAttributes() end)
+	if not ok or type(attrs) ~= "table" then return out end
+	for k, v in pairs(attrs) do
+		local kl = tostring(k):lower()
+		local is_boost = kl:find("boost") or kl:find("luck") or kl:find("moneyx") or kl:find("trainx")
+		local n = tonumber(v)
+		if is_boost and n and n > 1 then
+			local short = tostring(k):gsub("Boost", ""):gsub("Multiplier", "")
+			table.insert(out, short .. " " .. (n % 1 == 0 and tostring(math.floor(n)) or tostring(n)) .. "x")
+		end
+	end
+	return out
 end
 
-local function is_food_tool(t)
-  local is_food = false
-  pcall(function() is_food = t:GetAttribute("FoodId") or t:GetAttribute("IsFood") end)
-  if is_food then return true end
-  for _, name in pairs(FOOD_NAMES) do
-    if t.Name:find(name, 1, true) then return true end
-  end
-  return false
+local function update()
+	pcall(function()
+		local money = get_stat({"money", "cash", "coin"})
+		local level = get_stat({"level", "lvl", "rank"})
+		local inc = get_income()
+		local _, animals = scan_tools()
+		local food = best_food()
+
+		local incStr = inc and ("  +" .. fmt(inc) .. "/s") or ""
+		row1.Text = "$" .. fmt(money) .. incStr .. "   · Lv " .. level
+		row2.Text = "balo: " .. #animals .. "   ·   food: " .. (food and food.Name or "none")
+
+		local boosts = get_boosts()
+		if #boosts > 0 then
+			row3.Text = "boost: " .. table.concat(boosts, " · ")
+			row3.TextColor3 = COL.good
+		else
+			row3.Text = "boost: ko có"
+			row3.TextColor3 = COL.dim
+		end
+
+		row4.Text = os.date("%H:%M:%S") .. "  ·  live"
+	end)
 end
 
-local function scan_animal(tool)
-  local info = { mutation = nil, size = nil, rarity = nil, score = 1, income = nil }
-  local attrs
-  pcall(function() attrs = tool:GetAttributes() end)
-  if attrs then
-    for k, v in pairs(attrs) do
-      local kl = string.lower(k)
-      if type(v) == "string" then
-        if MUTATIONS[v] then info.mutation = v
-        elseif SIZES[v] then info.size = v
-        elseif RARITY_SCORE[v] then info.rarity = v
-        elseif kl:find("mutation") and MUTATIONS[v] then info.mutation = v
-        elseif kl:find("size") and SIZES[v] then info.size = v
-        elseif kl:find("rarity") and RARITY_SCORE[v] then info.rarity = v
-        end
-      elseif type(v) == "number" then
-        if kl:find("income") or kl:find("persec") or kl:find("value") or kl == "money" then
-          info.income = v
-        end
-      end
-    end
-  end
-  local base = (info.rarity and RARITY_SCORE[info.rarity]) or 1
-  local mm = (info.mutation and MUT_MULT[info.mutation]) or 1
-  local sm = (info.size and SIZE_MULT[info.size]) or 1
-  info.score = info.income or (base * mm * sm)
-  return info
-end
+minBtn.MouseButton1Click:Connect(function()
+	hud.Visible = false
+	floatBtn.Visible = true
+end)
+floatBtn.MouseButton1Click:Connect(function()
+	hud.Visible = true
+	floatBtn.Visible = false
+end)
+closeBtn.MouseButton1Click:Connect(function()
+	getgenv().linhhub_hud = nil
+	gui:Destroy()
+end)
 
-local function list_animals()
-  local bp = LP:FindFirstChild("Backpack")
-  local out = {}
-  if not bp then return out end
-  for _, item in ipairs(bp:GetChildren()) do
-    if item:IsA("Tool") and not is_food_tool(item) then
-      table.insert(out, { tool = item, info = scan_animal(item) })
-    end
-  end
-  table.sort(out, function(a, b) return a.info.score > b.info.score end)
-  return out
-end
+local dragging, dragStart, startPos
+header.InputBegan:Connect(function(input)
+	if not hud.Parent then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPos = hud.Position
+	end
+end)
+UIS.InputChanged:Connect(function(input)
+	if not hud.Parent then return end
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local d = input.Position - dragStart
+		hud.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end
+end)
+UIS.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+	end
+end)
 
-local function count_animals() return #list_animals() end
+UIS.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if not hud.Parent then return end
+	if input.KeyCode == CONFIG.TOGGLE_KEY or input.KeyCode == CONFIG.TOGGLE_KEY2 then
+		if hud.Visible then
+			hud.Visible = false
+			floatBtn.Visible = true
+		else
+			hud.Visible = true
+			floatBtn.Visible = false
+		end
+	end
+end)
 
---==================== actions
-local function act_claim()
-  if not R.Shop_ClaimFree then return end
-  local ok, res = pcall(R.Shop_ClaimFree.InvokeServer, R.Shop_ClaimFree)
-  log("claim free → " .. (ok and tostring(res) or "err"))
-end
-
-local function act_offline()
-  if not R.Offline_Claim then return end
-  local ok, res = pcall(R.Offline_Claim.InvokeServer, R.Offline_Claim)
-  log("offline → " .. (ok and tostring(res) or "err"))
-end
-
-local function act_equip()
-  if not R.Plot_EquipBest then return end
-  pcall(R.Plot_EquipBest.InvokeServer, R.Plot_EquipBest)
-end
-
-local function act_sell()
-  if not R.Plot_SellAnimal then return end
-  local items = list_animals()
-  local sold, kept = 0, 0
-  for _, it in ipairs(items) do
-    local inf = it.info
-    local is_trash = inf.rarity and State.sell_rarity[inf.rarity]
-    local keep = false
-    if CONFIG.KEEP_MUTATION and inf.mutation then keep = true end
-    if CONFIG.KEEP_SIZE and inf.size then keep = true end
-    if not keep and is_trash then
-      local ok = pcall(R.Plot_SellAnimal.InvokeServer, R.Plot_SellAnimal, it.tool)
-      if not ok then pcall(R.Plot_SellAnimal.InvokeServer, R.Plot_SellAnimal, it.tool.Name) end
-      if ok then sold = sold + 1 end
-      task.wait(0.08)
-    else
-      kept = kept + 1
-    end
-  end
-  if sold > 0 then log("đã bán " .. sold .. " · giữ " .. kept) end
-  return sold
-end
-
-local function act_place()
-  if not R.Plot_PlaceAnimal then return end
-  local items = list_animals()
-  if #items == 0 then return end
-  local placed = 0
-  for i = 1, math.min(#items, 3) do
-    local ok = pcall(R.Plot_PlaceAnimal.InvokeServer, R.Plot_PlaceAnimal, items[i].tool)
-    if not ok then
-      pcall(R.Plot_PlaceAnimal.InvokeServer, R.Plot_PlaceAnimal, items[i].tool.Name)
-    end
-    if ok then placed = placed + 1 end
-    task.wait(0.15)
-  end
-  if placed > 0 then log("đặt " .. placed .. " thú lên base") end
-  return placed
-end
-
-local function act_fence()
-  if not R.Plot_UpgradeFence then return end
-  local ok, res = pcall(R.Plot_UpgradeFence.InvokeServer, R.Plot_UpgradeFence)
-  if ok then log("fence → " .. tostring(res)) end
-end
-
---==================== throw
-local function inv(remote, ...)
-  if not remote then
-    log("inv: remote NIL")
-    return false, "nil"
-  end
-  local ok, res = pcall(remote.InvokeServer, remote, ...)
-  if not ok then
-    log("inv " .. tostring(remote.Name) .. " FAIL >> " .. tostring(res))
-  end
-  return ok, res
-end
-
-local function do_throw()
-  local mode = State.throw_mode
-  local food = State.food_id or 1
-  if mode == 1 then
-    inv(R.Throw_Start); task.wait(0.25)
-    inv(R.Throw_Resolve); task.wait(0.25)
-    inv(R.Throw_Complete)
-  elseif mode == 2 then
-    inv(R.Throw_Start, food); task.wait(0.25)
-    inv(R.Throw_Resolve, food, 1.0); task.wait(0.25)
-    inv(R.Throw_Complete, food)
-  elseif mode == 3 then
-    inv(R.Throw_Start, food); task.wait(0.25)
-    inv(R.Throw_Resolve, food, 20); task.wait(0.25)
-    inv(R.Throw_Complete, food)
-  elseif mode == 4 then
-    inv(R.Throw_Start, food); task.wait(0.8)
-    inv(R.Throw_Resolve, food); task.wait(0.25)
-    inv(R.Throw_Complete, food)
-  elseif mode == 5 then
-    inv(R.Throw_Start, food); task.wait(0.25)
-    inv(R.Throw_Resolve, 1.0); task.wait(0.25)
-    inv(R.Throw_Complete)
-  elseif mode == 6 then
-    inv(R.Throw_Start, food); task.wait(1.2)
-    inv(R.Throw_Resolve, 20); task.wait(0.25)
-    inv(R.Throw_Complete, food)
-  elseif mode == 7 then
-    inv(R.Throw_Start, food)
-  end
-  return true
-end
-
-local function apply_power()
-  if CONFIG.THROW_POWER == "max" then return end
-  local n = tonumber(CONFIG.THROW_POWER)
-  if not n then return end
-  if R.Player_SetThrowPower then
-    pcall(R.Player_SetThrowPower.InvokeServer, R.Player_SetThrowPower, n)
-  end
-end
-
---==================== training
-local function train_tap()
-  if not State.training_started then
-    if R.Training_Start then pcall(R.Training_Start.InvokeServer, R.Training_Start) end
-    State.training_started = true
-  end
-  if R.Training_TapBonus then pcall(R.Training_TapBonus.InvokeServer, R.Training_TapBonus) end
-end
-
-local function train_stop()
-  if State.training_started and R.Training_Stop then
-    pcall(R.Training_Stop.InvokeServer, R.Training_Stop)
-  end
-  State.training_started = false
-end
-
---==================== test modes (signal-based)
-local function test_modes()
-  if State.testing then return end
-  State.testing = true
-  local saved = State.auto_throw
-  State.auto_throw = false
-
-  if not State.food_id then
-    State.food_id = scan_best_food()
-  end
-
-  local re = RS:FindFirstChild("RemoteEvents")
-  local revealed = re and re:FindFirstChild("Throw_Revealed")
-  local hits = 0
-  local samples = {}
-  local conn
-  if revealed then
-    conn = revealed.OnClientEvent:Connect(function(...)
-      hits = hits + 1
-      if #samples < 3 then
-        local a = { ... }
-        local p = {}
-        for i = 1, math.min(#a, 4) do
-          p[#p + 1] = tostring(a[i]):sub(1, 40)
-        end
-        samples[#samples + 1] = table.concat(p, " | ")
-      end
-    end)
-  else
-    log("cảnh báo: không thấy Throw_Revealed — test sẽ dựa vào balo")
-  end
-
-  log("=== TEST MODES 1-7 (server-signal) ===")
-  log("food hiện tại: Food" .. tostring(State.food_id))
-  local results = {}
-  local bag_results = {}
-
-  for mode = 1, 7 do
-    State.throw_mode = mode
-    hits = 0; samples = {}
-    local before = count_animals()
-    log("mode " .. mode .. ": " .. MODE_SHORT[mode])
-
-    for i = 1, 3 do
-      do_throw()
-      task.wait(2.1)
-    end
-
-    local diff = count_animals() - before
-    results[mode] = hits
-    bag_results[mode] = diff
-    log("  signals=" .. hits .. " · balo+" .. diff
-      .. (samples[1] and (" >> " .. samples[1]) or ""))
-  end
-
-  if conn then pcall(function() conn:Disconnect() end) end
-
-  log("=== KẾT QUẢ ===")
-  local winner, best = nil, 0
-  for mode, n in pairs(results) do
-    if n > best then winner, best = mode, n end
-  end
-
-  if winner then
-    State.throw_mode = winner
-    log("MODE " .. winner .. " WORK (" .. best .. " signals / 3 throws) — đã chọn")
-    notify("mode work: " .. winner)
-  else
-    local bag_winner, bag_best = nil, 0
-    for mode, d in pairs(bag_results) do
-      if d > bag_best then bag_winner, bag_best = mode, d end
-    end
-    if bag_winner then
-      State.throw_mode = bag_winner
-      log("không có signal nhưng balo mode " .. bag_winner .. " +" .. bag_best .. " — tạm chọn")
-      notify("mode " .. bag_winner .. " (balo-based)")
-    else
-      log("CẢ 7 MODE FAIL — server im lặng hoàn toàn, cần spy args")
-      log("gợi ý: kiểm tra R.Throw_Start / Resolve / Complete có tồn tại không")
-      notify("cả 7 mode fail")
-    end
-  end
-
-  State.testing = false
-  State.auto_throw = saved
-end
-
---==================== scheduler
-local function scheduler()
-  log("scheduler started")
-  while State.running do
-    local t = os.clock()
-    local N = State.next
-    if State.auto_claim and t >= N.claim then
-      N.claim = t + CONFIG.CLAIM_DELAY; task.spawn(act_claim)
-    end
-    if State.auto_offline and t >= N.offline then
-      N.offline = t + CONFIG.OFFLINE_DELAY; task.spawn(act_offline)
-    end
-    if State.auto_equip and t >= N.equip then
-      N.equip = t + CONFIG.EQUIP_DELAY; task.spawn(act_equip)
-    end
-    if State.auto_sell and t >= N.sell then
-      N.sell = t + CONFIG.SELL_DELAY; task.spawn(act_sell)
-    end
-    if State.auto_place and t >= N.place then
-      N.place = t + CONFIG.PLACE_DELAY; task.spawn(act_place)
-    end
-    if State.auto_fence and t >= N.cycle then
-      N.cycle = t + 60; task.spawn(act_fence)
-    end
-    if State.auto_train and t >= N.train then
-      N.train = t + CONFIG.TRAIN_TAP; task.spawn(train_tap)
-    end
-    if State.auto_train and State.training_started and t >= (N.train_cycle or 0) then
-      N.train_cycle = t + CONFIG.TRAIN_CYCLE
-      task.spawn(function()
-        train_stop(); task.wait(1.5)
-        if State.auto_train then train_tap() end
-      end)
-    end
-    if State.auto_throw and t >= N.throw and not State.testing then
-      local jitter = 1 + (math.random() * 2 - 1) * CONFIG.THROW_JITTER
-      N.throw = t + CONFIG.THROW_DELAY * jitter
-      if math.random() > CONFIG.THROW_SKIP then
-        task.spawn(function()
-          if math.random() < 0.05 then apply_power() end
-          do_throw()
-        end)
-      end
-    end
-    task.wait(0.1)
-  end
-  log("scheduler stopped")
-end
-
-local function start_all()
-  if State.running then return end
-  if not State.food_id then
-    State.food_id = scan_best_food()
-    log("food: Food" .. State.food_id)
-  end
-  State.running = true
-  if not (State.auto_throw or State.auto_place or State.auto_train
-          or State.auto_sell or State.auto_claim) then
-    State.auto_throw = true
-    State.auto_place = true
-    log("auto-enabled: throw + place (chưa có toggle nào bật)")
-  end
-  task.spawn(scheduler)
-  log("=== START ===")
-end
-
-local function stop_all()
-  if not State.running then return end
-  State.running = false
-  pcall(train_stop)
-  log("=== STOP ===")
-end
-
---==================== boost watcher
-local function install_boost_watcher()
-  local re = RS:FindFirstChild("RemoteEvents")
-  if not re then return end
-  local names = { "Shop_Announce", "Notify", "AdminAbuse_Gift", "AdminAbuse_Vote",
-    "Throw_Revealed", "Throw_SuperGranted", "Training_Bonus" }
-  for _, n in ipairs(names) do
-    local ev = re:FindFirstChild(n)
-    if ev and ev:IsA("RemoteEvent") then
-      ev.OnClientEvent:Connect(function(...)
-        local args = { ... }
-        local txt = ""
-        for _, a in ipairs(args) do
-          if type(a) == "string" then txt = txt .. " " .. a end
-        end
-        local low = txt:lower()
-        if low:find("luck") or low:find("boost")
-          or low:find("2x") or low:find("4x") or low:find("8x") or low:find("16x") then
-          State.boost_status = low:sub(1, 40)
-          log("BOOST: " .. txt:sub(1, 120))
-          notify("boost: " .. txt:sub(1, 80))
-        end
-        if n == "Throw_Revealed" and args[1] then
-          local s = tostring(args[1])
-          if s:lower():find("rainbow") or s:lower():find("ruby") or s:lower():find("diamond") then
-            log("RARE DROP: " .. s:sub(1, 120))
-          end
-        end
-      end)
-    end
-  end
-end
-
---==================== theme
-local TH = {
-  bg          = Color3.fromRGB(10, 12, 18),
-  panel       = Color3.fromRGB(16, 20, 30),
-  panel_alt   = Color3.fromRGB(20, 25, 38),
-  stroke      = Color3.fromRGB(32, 40, 58),
-  text        = Color3.fromRGB(220, 228, 240),
-  text_dim    = Color3.fromRGB(140, 150, 170),
-  text_muted  = Color3.fromRGB(90, 100, 120),
-  accent      = Color3.fromRGB(100, 168, 255),
-  accent_dark = Color3.fromRGB(40, 80, 140),
-  ok          = Color3.fromRGB(90, 220, 130),
-  ok_dark     = Color3.fromRGB(24, 78, 46),
-  danger      = Color3.fromRGB(255, 90, 110),
-  danger_dark = Color3.fromRGB(64, 26, 32),
-  warn        = Color3.fromRGB(255, 190, 100),
-  warn_dark   = Color3.fromRGB(70, 50, 20),
-}
-local FONT, FONT_B, FONT_C = Enum.Font.Gotham, Enum.Font.GothamBold, Enum.Font.Code
-
---==================== gui helpers
-local Ui = {
-  sg = nil, window = nil, float = nil, dot = nil,
-  tabs = {}, tab_buttons = {}, active_tab = "home",
-  log_label = nil, log_frame = nil,
-  animal_list = nil, animal_count_label = nil,
-  status_label = nil, mode_desc_label = nil,
-  money_label = nil,
-  home_balo = nil, home_food = nil, home_mode = nil,
-}
-
-local function gui_parent()
-  local ok, h = pcall(function() return gethui and gethui() end)
-  if ok and h then return h end
-  return LP:WaitForChild("PlayerGui")
-end
-
-local function mk(p, cls, props)
-  local i = Instance.new(cls)
-  for k, v in pairs(props) do i[k] = v end
-  i.Parent = p
-  return i
-end
-
-local function stroke(parent, color, thick)
-  return mk(parent, "UIStroke", { Color = color or TH.stroke, Thickness = thick or 1 })
-end
-
-local function make_button(parent, props)
-  local b = mk(parent, "TextButton", {
-    BackgroundColor3 = props.bg or TH.panel_alt,
-    BorderSizePixel = 0,
-    Font = props.font or FONT_B,
-    TextSize = props.size or 11,
-    TextColor3 = props.color or TH.text,
-    Text = props.text or "",
-    AutoButtonColor = false,
-    Size = props.width and UDim2.new(0, props.width, 0, props.height or 26)
-      or UDim2.new(1, 0, 0, props.height or 26),
-    Position = props.pos,
-  })
-  b.Parent = parent
-  mk(b, "UICorner", { CornerRadius = UDim.new(0, 6) })
-  if props.hover then
-    b.MouseEnter:Connect(function()
-      TweenService:Create(b, TweenInfo.new(0.12), { BackgroundColor3 = props.hover }):Play()
-    end)
-    b.MouseLeave:Connect(function()
-      TweenService:Create(b, TweenInfo.new(0.12), { BackgroundColor3 = props.bg or TH.panel_alt }):Play()
-    end)
-  end
-  return b
-end
-
-local function make_toggle(parent, props)
-  local row = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, props.height or 30),
-    Position = props.pos,
-    BackgroundTransparency = 1,
-  })
-  mk(row, "TextLabel", {
-    Size = UDim2.new(1, -60, 0, 14),
-    Position = UDim2.new(0, 0, 0, 2),
-    BackgroundTransparency = 1,
-    Font = FONT_B, TextSize = 12, TextColor3 = TH.text,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    Text = props.text or "",
-  })
-  if props.subtext then
-    mk(row, "TextLabel", {
-      Size = UDim2.new(1, -60, 0, 10),
-      Position = UDim2.new(0, 0, 0, 16),
-      BackgroundTransparency = 1,
-      Font = FONT, TextSize = 9, TextColor3 = TH.text_muted,
-      TextXAlignment = Enum.TextXAlignment.Left,
-      Text = props.subtext,
-    })
-  end
-  local btn = make_button(row, {
-    text = "OFF", width = 52, height = 20,
-    bg = TH.panel_alt, color = TH.text_dim,
-    pos = UDim2.new(1, -52, 0, 4),
-  })
-  local state = props.initial or false
-  local function paint(v)
-    state = v
-    btn.Text = v and "ON" or "OFF"
-    btn.BackgroundColor3 = v and TH.ok_dark or TH.panel_alt
-    btn.TextColor3 = v and TH.ok or TH.text_dim
-  end
-  paint(state)
-  btn.MouseButton1Click:Connect(function()
-    paint(not state)
-    if props.on_change then props.on_change(state) end
-  end)
-end
-
-local function make_section(parent, text, y)
-  return mk(parent, "TextLabel", {
-    Size = UDim2.new(1, 0, 0, 14),
-    Position = UDim2.new(0, 0, 0, y),
-    BackgroundTransparency = 1,
-    Font = FONT_B, TextSize = 10, TextColor3 = TH.accent,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    Text = string.upper(text),
-  })
-end
-
-local function make_input(parent, props)
-  local row = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, props.height or 26),
-    Position = props.pos,
-    BackgroundTransparency = 1,
-  })
-  mk(row, "TextLabel", {
-    Size = UDim2.new(0.55, 0, 1, 0),
-    BackgroundTransparency = 1,
-    Font = FONT, TextSize = 11, TextColor3 = TH.text,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    Text = props.label or "",
-  })
-  local box = mk(row, "TextBox", {
-    Size = UDim2.new(0.4, 0, 0, 22),
-    Position = UDim2.new(0.55, 0, 0.5, 0),
-    AnchorPoint = Vector2.new(0, 0.5),
-    BackgroundColor3 = TH.bg, BorderSizePixel = 0,
-    Font = FONT_C, TextSize = 12, TextColor3 = TH.text,
-    PlaceholderText = props.placeholder or "",
-    PlaceholderColor3 = TH.text_muted,
-    Text = props.default or "",
-    ClearTextOnFocus = false,
-  })
-  mk(box, "UICorner", { CornerRadius = UDim.new(0, 5) })
-  stroke(box, TH.stroke)
-  box.FocusLost:Connect(function()
-    if props.on_change then props.on_change(box.Text) end
-  end)
-  return box
-end
-
---==================== tab: home
-local function build_home_tab(parent)
-  local y = 0
-  make_section(parent, "trạng thái", y); y = y + 20
-  local sc = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, 70),
-    Position = UDim2.new(0, 0, 0, y),
-    BackgroundColor3 = TH.panel_alt, BorderSizePixel = 0,
-  })
-  mk(sc, "UICorner", { CornerRadius = UDim.new(0, 8) })
-  stroke(sc, TH.stroke)
-  Ui.status_label = mk(sc, "TextLabel", {
-    Size = UDim2.new(1, -20, 1, -20), Position = UDim2.new(0, 10, 0, 10),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 11,
-    TextColor3 = TH.text_dim, TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
-    Text = "chưa chạy · nhấn START",
-  })
-  y = y + 80
-
-  local sb = make_button(parent, {
-    text = "▶ START", height = 38,
-    bg = TH.ok_dark, color = TH.ok,
-    hover = Color3.fromRGB(35, 100, 60), size = 13,
-    pos = UDim2.new(0, 0, 0, y),
-  })
-  sb.Size = UDim2.new(0.62, -4, 0, 38)
-  sb.MouseButton1Click:Connect(function() start_all() end)
-
-  local tb = make_button(parent, {
-    text = "■ STOP", height = 38,
-    bg = TH.danger_dark, color = TH.danger,
-    hover = Color3.fromRGB(90, 35, 42), size = 13,
-    pos = UDim2.new(0.62, 4, 0, y),
-  })
-  tb.Size = UDim2.new(0.38, -4, 0, 38)
-  tb.MouseButton1Click:Connect(function() stop_all() end)
-  y = y + 48
-
-  make_section(parent, "thông tin", y); y = y + 20
-  local scard = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, 56),
-    Position = UDim2.new(0, 0, 0, y),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-  })
-  mk(scard, "UICorner", { CornerRadius = UDim.new(0, 8) })
-  stroke(scard, TH.stroke)
-  local function sl(pos, text)
-    return mk(scard, "TextLabel", {
-      Size = UDim2.new(0.5, -8, 0, 20), Position = pos,
-      BackgroundTransparency = 1, Font = FONT_C, TextSize = 10,
-      TextColor3 = TH.text_dim, TextXAlignment = Enum.TextXAlignment.Left, Text = text,
-    })
-  end
-  Ui.home_balo = sl(UDim2.new(0, 10, 0, 10), "balo: --")
-  Ui.home_food = sl(UDim2.new(0.5, 4, 0, 10), "food: --")
-  Ui.home_mode = sl(UDim2.new(0, 10, 0, 32), "mode: --")
-  Ui.money_label = sl(UDim2.new(0.5, 4, 0, 32), "money: --")
-  y = y + 66
-
-  make_section(parent, "test & kiểm tra", y); y = y + 20
-  local tst = make_button(parent, {
-    text = "TEST 7 THROW MODES", height = 32,
-    bg = TH.warn_dark, color = TH.warn,
-    hover = Color3.fromRGB(95, 70, 30),
-    pos = UDim2.new(0, 0, 0, y),
-  })
-  tst.MouseButton1Click:Connect(function() task.spawn(test_modes) end)
-  y = y + 40
-
-  make_section(parent, "hành động nhanh", y); y = y + 20
-  local r1 = mk(parent, "Frame", { Size = UDim2.new(1, 0, 0, 26), Position = UDim2.new(0, 0, 0, y), BackgroundTransparency = 1 })
-  local c1 = make_button(r1, { text = "CLAIM", height = 26, bg = TH.panel_alt, color = TH.text, pos = UDim2.new(0, 0, 0, 0) })
-  c1.Size = UDim2.new(0.48, -3, 0, 26)
-  c1.MouseButton1Click:Connect(function() task.spawn(act_claim) end)
-  local o1 = make_button(r1, { text = "OFFLINE", height = 26, bg = TH.panel_alt, color = TH.text, pos = UDim2.new(0.52, 0, 0, 0) })
-  o1.Size = UDim2.new(0.48, -3, 0, 26)
-  o1.MouseButton1Click:Connect(function() task.spawn(act_offline) end)
-  y = y + 34
-  local r2 = mk(parent, "Frame", { Size = UDim2.new(1, 0, 0, 26), Position = UDim2.new(0, 0, 0, y), BackgroundTransparency = 1 })
-  local s2 = make_button(r2, { text = "SELL", height = 26, bg = TH.panel_alt, color = TH.text, pos = UDim2.new(0, 0, 0, 0) })
-  s2.Size = UDim2.new(0.48, -3, 0, 26)
-  s2.MouseButton1Click:Connect(function() task.spawn(act_sell) end)
-  local p2 = make_button(r2, { text = "PLACE", height = 26, bg = TH.panel_alt, color = TH.text, pos = UDim2.new(0.52, 0, 0, 0) })
-  p2.Size = UDim2.new(0.48, -3, 0, 26)
-  p2.MouseButton1Click:Connect(function() task.spawn(act_place) end)
-  y = y + 34
-  return y
-end
-
---==================== tab: throw
-local function build_throw_tab(parent)
-  local y = 0
-  make_section(parent, "auto throw", y); y = y + 20
-  make_toggle(parent, {
-    text = "Auto Throw", subtext = "tự động ném liên tục",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_throw = v end,
-  })
-  y = y + 36
-
-  make_section(parent, "chọn mode ném", y); y = y + 20
-  local list = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, 7 * 30 + 4),
-    Position = UDim2.new(0, 0, 0, y),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-  })
-  mk(list, "UICorner", { CornerRadius = UDim.new(0, 8) })
-  stroke(list, TH.stroke)
-  local mbtns = {}
-  local function paint_modes()
-    for m, b in pairs(mbtns) do
-      local active = (State.throw_mode == m)
-      b.BackgroundColor3 = active and TH.accent_dark or TH.panel_alt
-      b.TextColor3 = active and TH.accent or TH.text_dim
-    end
-    if Ui.mode_desc_label then
-      Ui.mode_desc_label.Text = "mode " .. State.throw_mode .. ": " .. (MODE_DESC[State.throw_mode] or "")
-    end
-  end
-  for m = 1, 7 do
-    local b = mk(list, "TextButton", {
-      Size = UDim2.new(1, -12, 0, 26),
-      Position = UDim2.new(0, 6, 0, (m - 1) * 30 + 4),
-      BackgroundColor3 = TH.panel_alt, BorderSizePixel = 0,
-      Font = FONT, TextSize = 11, TextColor3 = TH.text_dim,
-      TextXAlignment = Enum.TextXAlignment.Left,
-      Text = "  " .. m .. " · " .. MODE_SHORT[m],
-      AutoButtonColor = false,
-    })
-    mk(b, "UICorner", { CornerRadius = UDim.new(0, 5) })
-    b.MouseButton1Click:Connect(function()
-      State.throw_mode = m; paint_modes(); log("mode → " .. m)
-    end)
-    mbtns[m] = b
-  end
-  paint_modes()
-
-  Ui.mode_desc_label = mk(parent, "TextLabel", {
-    Size = UDim2.new(1, 0, 0, 24),
-    Position = UDim2.new(0, 0, 0, y + 7 * 30 + 10),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 9,
-    TextColor3 = TH.text_muted, TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
-    Text = "mode " .. State.throw_mode .. ": " .. (MODE_DESC[State.throw_mode] or ""),
-  })
-  y = y + 7 * 30 + 40
-
-  make_section(parent, "cấu hình ném", y); y = y + 20
-  make_input(parent, {
-    label = "Delay (giây)", default = tostring(CONFIG.THROW_DELAY), placeholder = "1.65",
-    pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v)
-      local n = tonumber(v); if n and n >= 1 then CONFIG.THROW_DELAY = n; log("delay: " .. n) end
-    end,
-  })
-  y = y + 32
-  make_input(parent, {
-    label = "Throw Power (studs)", default = "max", placeholder = "max",
-    pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v)
-      local n = tonumber(v)
-      if n and n > 0 then CONFIG.THROW_POWER = n; log("power: " .. n)
-      else CONFIG.THROW_POWER = "max"; log("power: max") end
-    end,
-  })
-  y = y + 32
-  make_input(parent, {
-    label = "Food ID (1-26)", default = tostring(State.food_id or "auto"), placeholder = "auto",
-    pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v)
-      local n = tonumber(v)
-      if n and n >= 1 and n <= 50 then
-        State.food_id = n; log("food: " .. n .. " (" .. (FOOD_NAMES[n] or "?") .. ")")
-      else
-        State.food_id = scan_best_food(); log("food auto: " .. State.food_id)
-      end
-    end,
-  })
-  y = y + 32
-
-  local tn = make_button(parent, {
-    text = "NÉM NGAY 1 LẦN", height = 32,
-    bg = TH.accent_dark, color = TH.accent,
-    hover = Color3.fromRGB(55, 100, 170),
-    pos = UDim2.new(0, 0, 0, y),
-  })
-  tn.MouseButton1Click:Connect(function()
-    if not State.food_id then State.food_id = scan_best_food() end
-    task.spawn(do_throw)
-  end)
-  y = y + 40
-  return y
-end
-
---==================== tab: animals
-local function build_animals_tab(parent)
-  local y = 0
-  make_section(parent, "quản lý thú", y); y = y + 20
-  make_toggle(parent, {
-    text = "Auto Place", subtext = "đặt thú từ balo lên base",
-    initial = State.auto_place, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_place = v end,
-  })
-  y = y + 36
-  make_toggle(parent, {
-    text = "Auto Equip Best", subtext = "tự equip thú tốt nhất",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_equip = v end,
-  })
-  y = y + 36
-
-  make_section(parent, "bán thú rác", y); y = y + 20
-  make_toggle(parent, {
-    text = "Auto Sell", subtext = "bán tự động theo rarity bên dưới",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_sell = v end,
-  })
-  y = y + 36
-  make_toggle(parent, {
-    text = "Giữ thú mutation", subtext = "Gold/Diamond/Emerald/Ruby/Rainbow",
-    initial = CONFIG.KEEP_MUTATION, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) CONFIG.KEEP_MUTATION = v end,
-  })
-  y = y + 36
-  make_toggle(parent, {
-    text = "Giữ thú size", subtext = "Big → Infinite",
-    initial = CONFIG.KEEP_SIZE, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) CONFIG.KEEP_SIZE = v end,
-  })
-  y = y + 40
-
-  make_section(parent, "rarity được phép bán", y); y = y + 20
-  local rl = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
-  local rr = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, 26), Position = UDim2.new(0, 0, 0, y),
-    BackgroundTransparency = 1,
-  })
-  for i, r in ipairs(rl) do
-    local b = mk(rr, "TextButton", {
-      Size = UDim2.new(0.2, -4, 0, 24),
-      Position = UDim2.new((i - 1) * 0.2, 2, 0, 0),
-      BackgroundColor3 = State.sell_rarity[r] and TH.accent_dark or TH.panel_alt,
-      BorderSizePixel = 0, Font = FONT_B, TextSize = 9,
-      TextColor3 = State.sell_rarity[r] and TH.accent or TH.text_muted,
-      Text = r:sub(1, 4):upper(), AutoButtonColor = false,
-    })
-    mk(b, "UICorner", { CornerRadius = UDim.new(0, 5) })
-    b.MouseButton1Click:Connect(function()
-      State.sell_rarity[r] = not State.sell_rarity[r]
-      b.BackgroundColor3 = State.sell_rarity[r] and TH.accent_dark or TH.panel_alt
-      b.TextColor3 = State.sell_rarity[r] and TH.accent or TH.text_muted
-    end)
-  end
-  y = y + 36
-
-  local sn = make_button(parent, {
-    text = "BÁN NGAY", height = 28,
-    bg = TH.danger_dark, color = TH.danger,
-    hover = Color3.fromRGB(90, 35, 42),
-    pos = UDim2.new(0, 0, 0, y),
-  })
-  sn.MouseButton1Click:Connect(function() task.spawn(act_sell) end)
-  y = y + 38
-
-  make_section(parent, "balo (tự refresh)", y); y = y + 20
-  Ui.animal_count_label = mk(parent, "TextLabel", {
-    Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 0, y),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 10,
-    TextColor3 = TH.text_dim, TextXAlignment = Enum.TextXAlignment.Left,
-    Text = "-- animals",
-  })
-  y = y + 18
-  Ui.animal_list = mk(parent, "ScrollingFrame", {
-    Size = UDim2.new(1, 0, 0, 140), Position = UDim2.new(0, 0, 0, y),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-    ScrollBarThickness = 4, ScrollBarImageColor3 = TH.stroke,
-    CanvasSize = UDim2.new(0, 0, 0, 0),
-  })
-  mk(Ui.animal_list, "UICorner", { CornerRadius = UDim.new(0, 8) })
-  stroke(Ui.animal_list, TH.stroke)
-  y = y + 148
-  return y
-end
-
---==================== tab: utils
-local function build_utils_tab(parent)
-  local y = 0
-  make_section(parent, "claim & offline", y); y = y + 20
-  make_toggle(parent, {
-    text = "Auto Claim Free", subtext = "mỗi " .. CONFIG.CLAIM_DELAY .. "s",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_claim = v end,
-  })
-  y = y + 36
-  make_toggle(parent, {
-    text = "Auto Offline Claim", subtext = "mỗi " .. CONFIG.OFFLINE_DELAY .. "s",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_offline = v end,
-  })
-  y = y + 44
-
-  make_section(parent, "training", y); y = y + 20
-  make_toggle(parent, {
-    text = "Auto Train", subtext = "tap bonus · stop mỗi " .. CONFIG.TRAIN_CYCLE .. "s",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v)
-      State.auto_train = v
-      if not v then pcall(train_stop) end
-    end,
-  })
-  y = y + 44
-
-  make_section(parent, "base", y); y = y + 20
-  make_toggle(parent, {
-    text = "Auto Upgrade Fence", subtext = "upgrade mỗi 60s nếu đủ tiền",
-    initial = false, pos = UDim2.new(0, 0, 0, y),
-    on_change = function(v) State.auto_fence = v end,
-  })
-  y = y + 40
-
-  make_section(parent, "boost watcher", y); y = y + 20
-  local bc = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, 44), Position = UDim2.new(0, 0, 0, y),
-    BackgroundColor3 = TH.panel_alt, BorderSizePixel = 0,
-  })
-  mk(bc, "UICorner", { CornerRadius = UDim.new(0, 8) })
-  stroke(bc, TH.stroke)
-  mk(bc, "TextLabel", {
-    Size = UDim2.new(1, -20, 1, -8), Position = UDim2.new(0, 10, 0, 6),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 10,
-    TextColor3 = TH.text_dim, TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
-    Text = "theo dõi Luck/Money/Training boost\ntự log mọi event từ server",
-  })
-  y = y + 52
-  return y
-end
-
---==================== tab: log
-local function build_log_tab(parent)
-  local y = 0
-  make_section(parent, "log realtime", y); y = y + 20
-  local row = mk(parent, "Frame", {
-    Size = UDim2.new(1, 0, 0, 26), Position = UDim2.new(0, 0, 0, y),
-    BackgroundTransparency = 1,
-  })
-  local cl = make_button(row, { text = "XÓA LOG", height = 24, bg = TH.panel_alt, color = TH.text_dim, pos = UDim2.new(0, 0, 0, 0) })
-  cl.Size = UDim2.new(0.48, -3, 0, 24)
-  cl.MouseButton1Click:Connect(function()
-    for i = #LogLines, 1, -1 do table.remove(LogLines, i) end
-    if log_hook then log_hook() end
-  end)
-  local cp = make_button(row, { text = "COPY", height = 24, bg = TH.panel_alt, color = TH.text_dim, pos = UDim2.new(0.52, 0, 0, 0) })
-  cp.Size = UDim2.new(0.48, -3, 0, 24)
-  cp.MouseButton1Click:Connect(function()
-    if setclipboard then pcall(setclipboard, table.concat(LogLines, "\n")); notify("đã copy log") end
-  end)
-  y = y + 34
-
-  Ui.log_frame = mk(parent, "ScrollingFrame", {
-    Size = UDim2.new(1, 0, 0, 400), Position = UDim2.new(0, 0, 0, y),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-    ScrollBarThickness = 4, ScrollBarImageColor3 = TH.stroke,
-    CanvasSize = UDim2.new(0, 0, 0, 0),
-  })
-  mk(Ui.log_frame, "UICorner", { CornerRadius = UDim.new(0, 8) })
-  stroke(Ui.log_frame, TH.stroke)
-  Ui.log_label = mk(Ui.log_frame, "TextLabel", {
-    Size = UDim2.new(1, -16, 0, 40), Position = UDim2.new(0, 8, 0, 6),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 10,
-    TextColor3 = TH.text_dim, TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true, Text = "",
-  })
-  y = y + 408
-  return y
-end
-
---==================== refresh
-local function refresh_log()
-  if not Ui.log_label then return end
-  pcall(function() Ui.log_label.Text = table.concat(LogLines, "\n") end)
-  task.defer(function()
-    pcall(function()
-      if not (Ui.log_label and Ui.log_frame) then return end
-      local h = math.max(Ui.log_label.TextBounds.Y + 12, Ui.log_frame.AbsoluteSize.Y)
-      Ui.log_frame.CanvasSize = UDim2.new(0, 0, 0, h)
-      Ui.log_frame.CanvasPosition = Vector2.new(0, math.max(0, h - Ui.log_frame.AbsoluteSize.Y))
-    end)
-  end)
-end
-
-local function refresh_animal_list()
-  if not Ui.animal_list then return end
-  for _, c in ipairs(Ui.animal_list:GetChildren()) do
-    if c:IsA("TextLabel") then c:Destroy() end
-  end
-  local items = list_animals()
-  for i = 1, math.min(#items, 30) do
-    local it, inf = items[i], items[i].info
-    local parts = {}
-    if inf.rarity then table.insert(parts, inf.rarity) end
-    if inf.mutation then table.insert(parts, "[" .. inf.mutation .. "]") end
-    if inf.size then table.insert(parts, "<" .. inf.size .. ">") end
-    table.insert(parts, "s=" .. string.format("%.1f", inf.score))
-    local row = mk(Ui.animal_list, "TextLabel", {
-      Size = UDim2.new(1, -12, 0, 18),
-      Position = UDim2.new(0, 6, 0, (i - 1) * 20 + 4),
-      BackgroundTransparency = 1, Font = FONT_C, TextSize = 10,
-      TextColor3 = TH.text_dim, TextXAlignment = Enum.TextXAlignment.Left,
-      Text = string.format("%-13s %s", it.tool.Name:sub(1, 13), table.concat(parts, " ")),
-    })
-    if inf.mutation and MUT_COLOR[inf.mutation] then
-      row.TextColor3 = MUT_COLOR[inf.mutation]
-    elseif inf.rarity and RARITY_COLOR[inf.rarity] then
-      row.TextColor3 = RARITY_COLOR[inf.rarity]
-    end
-  end
-  Ui.animal_list.CanvasSize = UDim2.new(0, 0, 0, math.max(#items * 20 + 8, 40))
-  if Ui.animal_count_label then
-    Ui.animal_count_label.Text = string.format("%d animals · tối đa 30", #items)
-  end
-end
-
-local function refresh_stats()
-  if Ui.home_balo then Ui.home_balo.Text = "balo: " .. count_animals() .. " thú" end
-  if Ui.home_food then
-    local f = State.food_id or scan_best_food()
-    Ui.home_food.Text = "food: " .. f .. " (" .. (FOOD_NAMES[f] or "?") .. ")"
-  end
-  if Ui.home_mode then
-    Ui.home_mode.Text = "mode: " .. State.throw_mode .. " · " .. (MODE_SHORT[State.throw_mode] or "?")
-  end
-  if Ui.money_label then
-    local m, lv = get_money(), get_level()
-    local p = {}
-    if m then table.insert(p, "money: $" .. fmt_money(m)) end
-    if lv then table.insert(p, "lv " .. tostring(lv)) end
-    Ui.money_label.Text = #p > 0 and table.concat(p, " · ") or "money: --"
-  end
-  if Ui.status_label then
-    local lines = {}
-    local function st(name, on) if on then table.insert(lines, "● " .. name) end end
-    st("throw", State.auto_throw)
-    st("train", State.auto_train)
-    st("place", State.auto_place)
-    st("sell", State.auto_sell)
-    st("equip", State.auto_equip)
-    st("claim", State.auto_claim)
-    st("offline", State.auto_offline)
-    st("fence", State.auto_fence)
-    if State.testing then
-      Ui.status_label.TextColor3 = TH.warn
-      Ui.status_label.Text = "ĐANG TEST MODES\n" .. #lines .. " chức năng bật"
-    elseif State.running then
-      Ui.status_label.TextColor3 = TH.ok
-      Ui.status_label.Text = "ĐANG CHẠY (" .. #lines .. ")\n" ..
-        (#lines > 0 and table.concat(lines, "  ") or "bật toggle để hoạt động")
-    else
-      Ui.status_label.TextColor3 = TH.text_muted
-      Ui.status_label.Text = "STOP · nhấn START"
-    end
-  end
-  if Ui.dot then
-    Ui.dot.BackgroundColor3 = State.running and TH.ok or TH.danger
-  end
-end
-
+update()
 task.spawn(function()
-  while true do
-    task.wait(2)
-    pcall(refresh_stats)
-    if Ui.active_tab == "animals" then pcall(refresh_animal_list) end
-  end
+	while hud.Parent do
+		task.wait(CONFIG.UPDATE_INTERVAL)
+		update()
+	end
 end)
 
---==================== tab switching
-local function switch_tab(id)
-  Ui.active_tab = id
-  for tid, frame in pairs(Ui.tabs) do frame.Visible = (tid == id) end
-  for tid, btn in pairs(Ui.tab_buttons) do
-    local a = (tid == id)
-    btn.BackgroundColor3 = a and TH.accent_dark or TH.panel_alt
-    btn.TextColor3 = a and TH.accent or TH.text_dim
-  end
-  if id == "animals" then pcall(refresh_animal_list) end
-  if id == "log" then pcall(refresh_log) end
-end
-
---==================== visibility
-local function set_window_visible(v)
-  if Ui.window then Ui.window.Visible = v end
-  if Ui.float then Ui.float.Visible = not v end
-end
-
-local function toggle_window()
-  if not Ui.window then return end
-  set_window_visible(not Ui.window.Visible)
-end
-
---==================== main window
-local function build_window()
-  local sg = Instance.new("ScreenGui")
-  sg.Name = "LinhHub"
-  sg.ResetOnSpawn = false
-  sg.IgnoreGuiInset = true
-  sg.DisplayOrder = 100
-  sg.Parent = gui_parent()
-  Ui.sg = sg
-
-  -- floating button (persistent, clicked to reopen)
-  local fl = Instance.new("TextButton")
-  fl.Name = "LinhHubFloat"
-  fl.Size = UDim2.fromOffset(44, 44)
-  fl.Position = UDim2.new(0, 10, 0, 200)
-  fl.BackgroundColor3 = TH.accent_dark
-  fl.BorderSizePixel = 0
-  fl.Font = FONT_B
-  fl.TextSize = 18
-  fl.TextColor3 = TH.accent
-  fl.Text = "L"
-  fl.AutoButtonColor = false
-  fl.Visible = false
-  fl.Active = true
-  fl.Parent = sg
-  Ui.float = fl
-  local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(1, 0); fc.Parent = fl
-  local fs = Instance.new("UIStroke"); fs.Color = TH.accent; fs.Thickness = 2; fs.Parent = fl
-  fl.MouseButton1Click:Connect(function() set_window_visible(true) end)
-
-  -- status dot
-  local dot = Instance.new("Frame")
-  dot.Size = UDim2.fromOffset(10, 10)
-  dot.Position = UDim2.new(1, -12, 0, 2)
-  dot.BackgroundColor3 = TH.danger
-  dot.BorderSizePixel = 0
-  dot.ZIndex = 2
-  dot.Parent = fl
-  Ui.dot = dot
-  local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(1, 0); dc.Parent = dot
-
-  -- main window
-  local win = mk(sg, "Frame", {
-    Size = UDim2.fromOffset(400, 560),
-    Position = UDim2.new(0, 24, 0, 60),
-    BackgroundColor3 = TH.bg,
-    BorderSizePixel = 0,
-    Active = true,
-  })
-  mk(win, "UICorner", { CornerRadius = UDim.new(0, 10) })
-  stroke(win, TH.stroke, 1)
-  Ui.window = win
-
-  -- header (draggable)
-  local header = mk(win, "Frame", {
-    Size = UDim2.new(1, 0, 0, 48),
-    BackgroundColor3 = TH.panel,
-    BorderSizePixel = 0,
-    Active = true,
-    Draggable = true,
-  })
-  mk(header, "UICorner", { CornerRadius = UDim.new(0, 10) })
-  mk(header, "Frame", {
-    Size = UDim2.new(1, 0, 0, 10),
-    Position = UDim2.new(0, 0, 1, -10),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-  })
-
-  mk(header, "TextLabel", {
-    Size = UDim2.new(1, -120, 0, 20), Position = UDim2.new(0, 14, 0, 8),
-    BackgroundTransparency = 1, Font = FONT_B, TextSize = 15,
-    TextColor3 = TH.accent, TextXAlignment = Enum.TextXAlignment.Left,
-    Text = "LinhHub",
-  })
-  mk(header, "TextLabel", {
-    Size = UDim2.new(1, -120, 0, 14), Position = UDim2.new(0, 14, 0, 26),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 10,
-    TextColor3 = TH.text_muted, TextXAlignment = Enum.TextXAlignment.Left,
-    Text = "v" .. CONFIG.VER .. " · " .. LP.Name .. " · RightCtrl",
-  })
-
-  -- hide btn
-  local hide = mk(header, "TextButton", {
-    Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -68, 0, 10),
-    BackgroundColor3 = TH.panel_alt, BorderSizePixel = 0,
-    Font = FONT_B, TextSize = 12, TextColor3 = TH.text_dim,
-    Text = "_", AutoButtonColor = false,
-  })
-  mk(hide, "UICorner", { CornerRadius = UDim.new(0, 6) })
-  hide.MouseButton1Click:Connect(function() set_window_visible(false) end)
-
-  -- close btn
-  local close = mk(header, "TextButton", {
-    Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -36, 0, 10),
-    BackgroundColor3 = TH.danger_dark, BorderSizePixel = 0,
-    Font = FONT_B, TextSize = 14, TextColor3 = TH.danger,
-    Text = "×", AutoButtonColor = false,
-  })
-  mk(close, "UICorner", { CornerRadius = UDim.new(0, 6) })
-  close.MouseButton1Click:Connect(function() set_window_visible(false) end)
-
-  -- tab bar
-  local tabbar = mk(win, "Frame", {
-    Size = UDim2.new(1, 0, 0, 36), Position = UDim2.new(0, 0, 0, 48),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-  })
-  local tabs = {
-    { id = "home", label = "Chính" },
-    { id = "throw", label = "Ném" },
-    { id = "animals", label = "Thú" },
-    { id = "utils", label = "Khác" },
-    { id = "log", label = "Log" },
-  }
-  for i, d in ipairs(tabs) do
-    local b = mk(tabbar, "TextButton", {
-      Size = UDim2.new(0.2, -4, 0, 28),
-      Position = UDim2.new((i - 1) * 0.2, 2, 0, 4),
-      BackgroundColor3 = TH.panel_alt, BorderSizePixel = 0,
-      Font = FONT_B, TextSize = 11, TextColor3 = TH.text_dim,
-      Text = d.label, AutoButtonColor = false,
-    })
-    mk(b, "UICorner", { CornerRadius = UDim.new(0, 5) })
-    Ui.tab_buttons[d.id] = b
-    b.MouseButton1Click:Connect(function() switch_tab(d.id) end)
-  end
-
-  -- content
-  local content = mk(win, "Frame", {
-    Size = UDim2.new(1, -20, 1, -104), Position = UDim2.new(0, 10, 0, 90),
-    BackgroundTransparency = 1,
-  })
-  local function mkframe()
-    return mk(content, "ScrollingFrame", {
-      Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
-      BorderSizePixel = 0, ScrollBarThickness = 4,
-      ScrollBarImageColor3 = TH.stroke,
-      CanvasSize = UDim2.new(0, 0, 0, 0), Visible = false,
-    })
-  end
-  Ui.tabs.home = mkframe(); Ui.tabs.throw = mkframe()
-  Ui.tabs.animals = mkframe(); Ui.tabs.utils = mkframe(); Ui.tabs.log = mkframe()
-
-  local h1 = build_home_tab(Ui.tabs.home); Ui.tabs.home.CanvasSize = UDim2.new(0, 0, 0, h1 + 10)
-  local h2 = build_throw_tab(Ui.tabs.throw); Ui.tabs.throw.CanvasSize = UDim2.new(0, 0, 0, h2 + 10)
-  local h3 = build_animals_tab(Ui.tabs.animals); Ui.tabs.animals.CanvasSize = UDim2.new(0, 0, 0, h3 + 10)
-  local h4 = build_utils_tab(Ui.tabs.utils); Ui.tabs.utils.CanvasSize = UDim2.new(0, 0, 0, h4 + 10)
-  local h5 = build_log_tab(Ui.tabs.log); Ui.tabs.log.CanvasSize = UDim2.new(0, 0, 0, h5 + 10)
-
-  -- footer
-  local f = mk(win, "Frame", {
-    Size = UDim2.new(1, 0, 0, 22), Position = UDim2.new(0, 0, 1, -22),
-    BackgroundColor3 = TH.panel, BorderSizePixel = 0,
-  })
-  mk(f, "UICorner", { CornerRadius = UDim.new(0, 10) })
-  mk(f, "TextLabel", {
-    Size = UDim2.new(1, -20, 1, 0), Position = UDim2.new(0, 12, 0, 0),
-    BackgroundTransparency = 1, Font = FONT_C, TextSize = 9,
-    TextColor3 = TH.text_muted, TextXAlignment = Enum.TextXAlignment.Left,
-    Text = "RightCtrl ẩn/hiện · nút L để mở lại",
-  })
-
-  switch_tab("home")
-end
-
---==================== input
-UIS.InputBegan:Connect(function(input, processed)
-  if processed then return end
-  if input.KeyCode == CONFIG.TOGGLE_KEY
-    or input.KeyCode == Enum.KeyCode.F2 then
-    toggle_window()
-  end
-end)
-
---==================== shutdown
-local function shutdown(reason)
-  State.running = false
-  State.auto_train = false; State.auto_throw = false
-  State.auto_claim = false; State.auto_offline = false
-  State.auto_equip = false; State.auto_sell = false
-  State.auto_fence = false
-  pcall(train_stop)
-  local ch = LP.Character
-  local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-  if hum then pcall(function() hum.WalkSpeed = 16; hum.JumpPower = 50 end) end
-  if Ui.sg then pcall(function() Ui.sg:Destroy() end) end
-  log("unloaded" .. (reason and (" · " .. tostring(reason)) or ""))
-  getgenv().nyx_loaded = false
-  if getgenv().nyx_unload == shutdown then getgenv().nyx_unload = nil end
-end
-getgenv().nyx_unload = shutdown
-
---==================== boot
-build_window()
-log_hook = refresh_log
-task.spawn(function()
-  State.food_id = scan_best_food()
-  log("food: Food" .. State.food_id .. " (" .. (FOOD_NAMES[State.food_id] or "?") .. ")")
-  task.wait(1)
-  refresh_stats()
-  refresh_animal_list()
-  install_boost_watcher()
-  log("LinhHub v2.3 sẵn sàng · RightCtrl = ẩn/hiện")
-end)
-```
-
-Xong v2.3. Thay đổi so với 2.2:
-
-**`inv()`** — giờ mỗi lần remote fail nó log thẳng tên remote + lỗi vào tab Log: `inv Throw_Resolve FAIL >> ...`. Hết im lặng.
-
-**`start_all()`** — bấm START mà chưa bật toggle nào thì tự bật `throw + place`, log `auto-enabled: throw + place`. Không còn cảnh scheduler chạy mà không làm gì.
-
-**`test_modes()`** — viết lại hoàn toàn. Trước khi test, hook `Throw_Revealed.OnClientEvent`, đếm số signal server trả về cho mỗi mode (3 lần ném). Log kiểu:
-```
-mode 2: food + rating
-  signals=3 · balo+1 >> Badger | Gold | 18
+-- ============ END OF FILE ============
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
+-- ............................................................................
